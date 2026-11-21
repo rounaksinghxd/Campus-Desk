@@ -1,0 +1,6 @@
+{
+  "name": "CampusDesk — University Faculty Locator & Schedule Hub",
+  "description": "Live university faculty room locator, class & meeting status tracker, demo clock simulator, CSV schedule manager, and student-faculty meeting request portal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
