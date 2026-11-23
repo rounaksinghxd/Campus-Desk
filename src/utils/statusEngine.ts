@@ -281,9 +281,52 @@ export function normalizeSlotType(raw: string): SlotType {
   return 'Class';
 }
 
+export function validatePhoneNumber(raw: string): {
+  valid: boolean;
+  display: string;
+  telHref: string;
+} {
+  const cleaned = raw.trim().replace(/\s+/g, ' ');
+  if (!cleaned) {
+    return { valid: false, display: '', telHref: '' };
+  }
+  const hasPlus = cleaned.startsWith('+');
+  const digitsOnly = cleaned.replace(/\D/g, '');
+  // Support Indian numbers (+91 + 10 digits, 0 + 10 digits, or 10 digits) and general 10-15 digit numbers
+  const isValidLength = digitsOnly.length >= 10 && digitsOnly.length <= 15;
+  const isValidChars = /^\+?[\d\s\-()]+$/.test(cleaned);
+  if (!isValidLength || !isValidChars) {
+    return { valid: false, display: cleaned, telHref: '' };
+  }
+  const dialNumber = `${hasPlus ? '+' : ''}${digitsOnly}`;
+  return {
+    valid: true,
+    display: cleaned,
+    telHref: `tel:${dialNumber}`,
+  };
+}
+
+export function validateEmailAddress(raw: string): {
+  valid: boolean;
+  email: string;
+  mailtoHref: string;
+} {
+  const cleaned = raw.trim();
+  if (!cleaned) {
+    return { valid: false, email: '', mailtoHref: '' };
+  }
+  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleaned);
+  return {
+    valid,
+    email: cleaned,
+    mailtoHref: valid ? `mailto:${encodeURIComponent(cleaned).replace(/%40/g, '@')}` : '',
+  };
+}
+
 export function parseFacultyCsvText(
   csvText: string,
-  existingFaculty: FacultyMember[] = []
+  existingFaculty: FacultyMember[] = [],
+  options: { overwriteEmptyContacts?: boolean } = {}
 ): {
   parsed: Array<Omit<FacultyMember, 'hasPassword'> & { initialPassword?: string }>;
   warnings: string[];
@@ -294,8 +337,11 @@ export function parseFacultyCsvText(
   }
 
   const headers = rows[0].map((h) => h.toLowerCase().replace(/[^a-z0-9]/g, ''));
-  const colIndex = (candidates: string[]) =>
-    headers.findIndex((h) => candidates.some((c) => h === c || h.includes(c)));
+  const colIndex = (candidates: string[]) => {
+    const exact = headers.findIndex((h) => candidates.some((c) => h === c));
+    if (exact !== -1) return exact;
+    return headers.findIndex((h) => candidates.some((c) => h.includes(c)));
+  };
 
   const idIdx = colIndex(['id', 'facultyid', 'code', 'empid']);
   const nameIdx = colIndex(['facultynames', 'facultyname', 'name', 'fullname']);
@@ -303,7 +349,15 @@ export function parseFacultyCsvText(
   const deptIdx = colIndex(['department', 'dept']);
   const desigIdx = colIndex(['designation', 'title', 'role', 'position']);
   const roleTypeIdx = colIndex(['roletype', 'category', 'type', 'stafftype']);
-  const emailIdx = colIndex(['email', 'mail']);
+  const mobileIdx = colIndex([
+    'mobilenumber',
+    'mobile',
+    'phonenumber',
+    'phone',
+    'contactno',
+    'contact',
+  ]);
+  const emailIdx = colIndex(['emailaddress', 'email', 'mail']);
   const leaveStartIdx = colIndex(['leavestart', 'fromdate']);
   const leaveUntilIdx = colIndex(['leaveuntil', 'leaveend', 'leave', 'todate']);
   const dutyStartIdx = colIndex(['dutystart', 'startduty', 'workstart']);
@@ -322,6 +376,7 @@ export function parseFacultyCsvText(
   }
 
   const existingById = new Map(existingFaculty.map((f) => [f.id.toUpperCase(), f]));
+  const seenIds = new Map<string, number>();
   const parsed: Array<Omit<FacultyMember, 'hasPassword'> & { initialPassword?: string }> = [];
 
   for (let i = 1; i < rows.length; i++) {
@@ -354,25 +409,57 @@ export function parseFacultyCsvText(
         ? 'Staff'
         : prev?.roleType || 'Faculty';
 
+    // Handle Mobile Number (always string, preserve leading zeros / +91, don't overwrite valid data with empty)
+    let mobileNumber: string | undefined = prev?.mobileNumber;
+    if (mobileIdx !== -1) {
+      const rawMobile = (r[mobileIdx] || '').trim();
+      if (rawMobile) {
+        const checked = validatePhoneNumber(rawMobile);
+        if (checked.valid) {
+          mobileNumber = checked.display;
+        } else {
+          warnings.push(`Row ${i + 1} (${id}): Invalid mobile number format ignored.`);
+        }
+      } else if (options.overwriteEmptyContacts) {
+        mobileNumber = undefined;
+      }
+    }
+
+    // Handle Email (never generate fake emails; don't overwrite valid email with empty)
+    let email: string | undefined = prev?.email;
+    if (emailIdx !== -1) {
+      const rawEmail = (r[emailIdx] || '').trim();
+      if (rawEmail) {
+        const checked = validateEmailAddress(rawEmail);
+        if (checked.valid) {
+          email = checked.email;
+        } else {
+          warnings.push(`Row ${i + 1} (${id}): Invalid email format ignored.`);
+        }
+      } else if (options.overwriteEmptyContacts) {
+        email = undefined;
+      }
+    }
+
     const leaveStart = leaveStartIdx !== -1 ? (r[leaveStartIdx] || '').trim() : prev?.leaveStart || '';
     const leaveUntil = leaveUntilIdx !== -1 ? (r[leaveUntilIdx] || '').trim() : prev?.leaveUntil || '';
     const dutyStart =
       dutyStartIdx !== -1 && r[dutyStartIdx] ? normalizeTime24(r[dutyStartIdx]) : prev?.dutyStart || '09:00';
     const dutyEnd =
       dutyEndIdx !== -1 && r[dutyEndIdx] ? normalizeTime24(r[dutyEndIdx]) : prev?.dutyEnd || '17:30';
-    const email = (emailIdx !== -1 ? r[emailIdx] : '') || prev?.email || `${id.toLowerCase()}@campus.edu`;
     const availabilityNote =
       (noteIdx !== -1 ? r[noteIdx] : '') || prev?.availabilityNote || '';
     const initialPassword = passIdx !== -1 ? (r[passIdx] || '').trim() : undefined;
 
-    parsed.push({
+    const record: Omit<FacultyMember, 'hasPassword'> & { initialPassword?: string } = {
       id,
       name,
       department: department.trim(),
       designation: designation.trim(),
       cabin: cleanedRoom,
       roleType,
-      email: email.trim(),
+      mobileNumber: mobileNumber || undefined,
+      email: email || undefined,
       leaveStart: leaveStart || undefined,
       leaveUntil: leaveUntil || undefined,
       dutyStart,
@@ -380,7 +467,21 @@ export function parseFacultyCsvText(
       workingDays: prev?.workingDays || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
       availabilityNote: availabilityNote || undefined,
       initialPassword: initialPassword || undefined,
-    });
+    };
+
+    const existingParsedIndex = seenIds.get(id);
+    if (existingParsedIndex !== undefined) {
+      warnings.push(`Row ${i + 1} (${id}): Duplicate ID in CSV merged with earlier row.`);
+      parsed[existingParsedIndex] = {
+        ...parsed[existingParsedIndex],
+        ...record,
+        mobileNumber: record.mobileNumber ?? parsed[existingParsedIndex].mobileNumber,
+        email: record.email ?? parsed[existingParsedIndex].email,
+      };
+    } else {
+      seenIds.set(id, parsed.length);
+      parsed.push(record);
+    }
   }
 
   return { parsed, warnings };

@@ -16,6 +16,7 @@ export interface FacultyMember {
   designation: string;
   cabin: string;
   roleType: 'Faculty' | 'Staff';
+  mobileNumber?: string;
   email?: string;
   leaveStart?: string; // YYYY-MM-DD
   leaveUntil?: string; // YYYY-MM-DD

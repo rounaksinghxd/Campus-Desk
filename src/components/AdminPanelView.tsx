@@ -9,7 +9,12 @@ import {
   Upload,
 } from 'lucide-react';
 import { AuthSession, DepartmentEvent, FacultyMember, ScheduleSlot } from '../types';
-import { parseFacultyCsvText, parseScheduleCsvText } from '../utils/statusEngine';
+import {
+  parseFacultyCsvText,
+  parseScheduleCsvText,
+  validateEmailAddress,
+  validatePhoneNumber,
+} from '../utils/statusEngine';
 import { EventManagerPanel } from './EventManagerPanel';
 
 interface AdminPanelViewProps {
@@ -26,10 +31,10 @@ interface AdminPanelViewProps {
   initialEditEvent?: DepartmentEvent | null;
 }
 
-const SAMPLE_FACULTY_UPLOAD = `Id,Faculty Names,Room Nos.,Department,Designation,Leave Until
-AC,Prof. Dr. Abir Chatterjee (AC),B1 LG 1.7(a),Computer Science & Eng.,Professor & HOD,
-AYC,Prof. Dr. Ayan Chatterjee (AYC),B1 3.11,Computer Science & Eng.,Professor,
-SGH,Prof. Dr. Sudipta Ghosh (SGH),B2 LG 0.7,Electronics & Comm.,Professor,2026-11-27`;
+const SAMPLE_FACULTY_UPLOAD = `Id,Faculty Names,Room Nos.,Department,Designation,Mobile,Email,Leave Until
+AC,Prof. Dr. Abir Chatterjee (AC),B1 LG 1.7(a),Computer Science & Eng.,Professor & HOD,,,
+AYC,Prof. Dr. Ayan Chatterjee (AYC),B1 3.11,Computer Science & Eng.,Professor,,,
+SGH,Prof. Dr. Sudipta Ghosh (SGH),B2 LG 0.7,Electronics & Comm.,Professor,,,2026-11-27`;
 
 const SAMPLE_SCHEDULE_UPLOAD = `faculty_id,day,start_time,end_time,type,title,room
 AC,Mon,09:30,11:00,Class,CS601 Distributed Systems,B1 LH 2.02
@@ -73,9 +78,12 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   const [editDept, setEditDept] = useState('');
   const [editDesig, setEditDesig] = useState('');
   const [editCabin, setEditCabin] = useState('');
+  const [editMobile, setEditMobile] = useState('');
+  const [editEmail, setEditEmail] = useState('');
   const [editLeaveUntil, setEditLeaveUntil] = useState('');
   const [editPassword, setEditPassword] = useState('');
   const [rosterMsg, setRosterMsg] = useState<string | null>(null);
+  const [rosterError, setRosterError] = useState<string | null>(null);
 
   const handleAdminAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -168,13 +176,18 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     setEditDept(m.department);
     setEditDesig(m.designation);
     setEditCabin(m.cabin);
+    setEditMobile(m.mobileNumber || '');
+    setEditEmail(m.email || '');
     setEditLeaveUntil(m.leaveUntil || '');
     setEditPassword('');
     setRosterMsg(null);
+    setRosterError(null);
   };
 
   const saveEdit = async (id: string) => {
     if (!session?.token) return;
+    setRosterError(null);
+    setRosterMsg(null);
     const res = await fetch(`/api/admin/faculty/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: {
@@ -185,14 +198,19 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         department: editDept,
         designation: editDesig,
         cabin: editCabin,
+        mobileNumber: editMobile,
+        email: editEmail,
         leaveUntil: editLeaveUntil,
         newPassword: editPassword.trim() || undefined,
       }),
     });
+    const data = await res.json().catch(() => ({}));
     if (res.ok) {
       setEditingId(null);
       await onDirectoryRefresh();
       setRosterMsg(`Updated ${id}.`);
+    } else {
+      setRosterError(data.error || `Failed to update ${id}.`);
     }
   };
 
@@ -285,7 +303,9 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       f.id.toLowerCase().includes(q) ||
       f.name.toLowerCase().includes(q) ||
       f.department.toLowerCase().includes(q) ||
-      f.cabin.toLowerCase().includes(q)
+      f.cabin.toLowerCase().includes(q) ||
+      (f.mobileNumber || '').toLowerCase().includes(q) ||
+      (f.email || '').toLowerCase().includes(q)
     );
   });
 
@@ -384,7 +404,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             </div>
 
             <p className="text-xs text-slate-500">
-              Supports your 3-column sheet (<span className="font-mono">Id,Faculty Names,Room Nos.</span>) or full columns (<span className="font-mono">id,name,department,designation,cabin,leave_until</span>).
+              Supports <span className="font-mono">Id,Faculty Names,Room Nos.,Mobile,Email</span> as well as full columns (<span className="font-mono">department,designation,mobile_number,email,leave_until</span>). Empty contact cells preserve existing valid records.
             </p>
 
             <div className="flex items-center justify-between gap-3">
@@ -584,6 +604,9 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             {rosterMsg && (
               <p className="text-xs font-medium text-blue-700 mt-0.5">{rosterMsg}</p>
             )}
+            {rosterError && (
+              <p className="text-xs font-medium text-rose-700 mt-0.5">{rosterError}</p>
+            )}
           </div>
           <div className="relative w-full sm:w-72">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -591,7 +614,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
               type="text"
               value={rosterSearch}
               onChange={(e) => setRosterSearch(e.target.value)}
-              placeholder="Filter roster by ID, name, or room..."
+              placeholder="Filter roster by ID, name, room, contact..."
               className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
             />
           </div>
@@ -605,6 +628,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                 <th className="py-2.5 px-4">Name</th>
                 <th className="py-2.5 px-4">Department</th>
                 <th className="py-2.5 px-4">Cabin Room</th>
+                <th className="py-2.5 px-4">Direct Contact</th>
                 <th className="py-2.5 px-4">Leave Until</th>
                 <th className="py-2.5 px-4">Portal Password</th>
                 <th className="py-2.5 px-4 text-right">Actions</th>
@@ -613,6 +637,8 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             <tbody className="divide-y divide-slate-200">
               {filteredRoster.map((m) => {
                 const isEditing = editingId === m.id;
+                const phoneInfo = m.mobileNumber ? validatePhoneNumber(m.mobileNumber) : null;
+                const emailInfo = m.email ? validateEmailAddress(m.email) : null;
                 return (
                   <tr key={m.id} className="hover:bg-slate-50/60">
                     <td className="py-2.5 px-4 font-mono font-semibold text-slate-900">
@@ -653,6 +679,41 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                         />
                       ) : (
                         m.cabin
+                      )}
+                    </td>
+                    <td className="py-2.5 px-4 text-slate-700">
+                      {isEditing ? (
+                        <div className="space-y-1.5 min-w-[180px]">
+                          <input
+                            type="tel"
+                            value={editMobile}
+                            onChange={(e) => setEditMobile(e.target.value)}
+                            placeholder="Mobile (e.g. +91...)"
+                            className="px-2 py-1 text-xs font-mono border border-slate-300 rounded w-full"
+                          />
+                          <input
+                            type="email"
+                            value={editEmail}
+                            onChange={(e) => setEditEmail(e.target.value)}
+                            placeholder="Official email"
+                            className="px-2 py-1 text-xs border border-slate-300 rounded w-full"
+                          />
+                        </div>
+                      ) : phoneInfo?.valid || emailInfo?.valid ? (
+                        <div className="space-y-0.5">
+                          {phoneInfo?.valid && (
+                            <div className="font-mono tabular-nums text-slate-800">
+                              {phoneInfo.display}
+                            </div>
+                          )}
+                          {emailInfo?.valid && (
+                            <div className="text-slate-600 truncate max-w-[200px]">
+                              {emailInfo.email}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-slate-400">—</span>
                       )}
                     </td>
                     <td className="py-2.5 px-4 font-mono tabular-nums text-slate-700">
@@ -696,7 +757,10 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                           </button>
                           <button
                             type="button"
-                            onClick={() => setEditingId(null)}
+                            onClick={() => {
+                              setEditingId(null);
+                              setRosterError(null);
+                            }}
                             className="text-slate-500 hover:text-slate-800 cursor-pointer"
                           >
                             Cancel

@@ -25,6 +25,7 @@ export interface CampusDatabase {
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'campus-data.json');
+const DATA_BACKUP_FILE = path.join(DATA_DIR, 'campus-data.backup.json');
 const SESSION_SECRET =
   process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
@@ -155,6 +156,19 @@ export function saveDb(db: CampusDatabase): void {
   const tmpFile = `${DATA_FILE}.tmp`;
   fs.writeFileSync(tmpFile, JSON.stringify(db, null, 2), 'utf-8');
   fs.renameSync(tmpFile, DATA_FILE);
+}
+
+export function backupDb(): boolean {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (fs.existsSync(DATA_FILE)) {
+    const tmpBackup = `${DATA_BACKUP_FILE}.tmp`;
+    fs.copyFileSync(DATA_FILE, tmpBackup);
+    fs.renameSync(tmpBackup, DATA_BACKUP_FILE);
+    return true;
+  }
+  return false;
 }
 
 export function resetDbToSample(): CampusDatabase {

@@ -3,6 +3,7 @@ import express, { NextFunction, Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import {
+  backupDb,
   createSessionToken,
   hashSecret,
   loadDb,
@@ -21,6 +22,8 @@ import {
   parseFacultyCsvText,
   parseScheduleCsvText,
   parseTimeToMinutes,
+  validateEmailAddress,
+  validatePhoneNumber,
 } from './src/utils/statusEngine';
 import {
   DayOfWeek,
@@ -912,7 +915,7 @@ async function startServer() {
 
   // --- Protected Admin Endpoints ---
   app.post('/api/admin/import/faculty', requireRole('admin'), (req, res) => {
-    const { csvText, mode } = req.body ?? {};
+    const { csvText, mode, overwriteEmptyContacts } = req.body ?? {};
     if (typeof csvText !== 'string' || !csvText.trim()) {
       res.status(400).json({ error: 'CSV content is required.' });
       return;
@@ -920,13 +923,16 @@ async function startServer() {
     const replaceAll = mode === 'replace';
     const db = loadDb();
     const publicCurrent = db.faculty.map(toPublicFaculty);
-    const { parsed, warnings } = parseFacultyCsvText(csvText, publicCurrent);
+    const { parsed, warnings } = parseFacultyCsvText(csvText, publicCurrent, {
+      overwriteEmptyContacts: Boolean(overwriteEmptyContacts),
+    });
 
     if (parsed.length === 0) {
       res.status(400).json({ error: warnings[0] || 'No valid faculty rows found in CSV.' });
       return;
     }
 
+    backupDb();
     const existingMap = new Map(db.faculty.map((f) => [f.id.toUpperCase(), f]));
 
     if (replaceAll) {
@@ -1004,6 +1010,8 @@ async function startServer() {
       department,
       designation,
       cabin,
+      mobileNumber,
+      email,
       leaveStart,
       leaveUntil,
       availabilityNote,
@@ -1016,6 +1024,36 @@ async function startServer() {
     if (!member) {
       res.status(404).json({ error: 'Faculty member not found.' });
       return;
+    }
+
+    if (typeof mobileNumber === 'string') {
+      const trimmedPhone = mobileNumber.trim();
+      if (!trimmedPhone) {
+        member.mobileNumber = undefined;
+      } else {
+        const checkedPhone = validatePhoneNumber(trimmedPhone);
+        if (!checkedPhone.valid) {
+          res.status(400).json({
+            error: 'Invalid mobile number. Enter 10–15 digits (optional +91 country code).',
+          });
+          return;
+        }
+        member.mobileNumber = checkedPhone.display;
+      }
+    }
+
+    if (typeof email === 'string') {
+      const trimmedEmail = email.trim();
+      if (!trimmedEmail) {
+        member.email = undefined;
+      } else {
+        const checkedEmail = validateEmailAddress(trimmedEmail);
+        if (!checkedEmail.valid) {
+          res.status(400).json({ error: 'Invalid email address format.' });
+          return;
+        }
+        member.email = checkedEmail.email;
+      }
     }
 
     if (typeof name === 'string' && name.trim()) member.name = name.trim().slice(0, 120);

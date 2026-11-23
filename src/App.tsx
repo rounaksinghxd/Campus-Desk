@@ -120,6 +120,8 @@ export default function App() {
         member.designation.toLowerCase().includes(q) ||
         member.cabin.toLowerCase().includes(q) ||
         member.department.toLowerCase().includes(q) ||
+        (member.mobileNumber || '').toLowerCase().includes(q) ||
+        (member.email || '').toLowerCase().includes(q) ||
         status.roomOrVenue.toLowerCase().includes(q) ||
         status.headline.toLowerCase().includes(q)
       );
@@ -354,7 +356,11 @@ export default function App() {
       </footer>
 
       <FacultyDetailDrawer
-        member={drawerFaculty}
+        member={
+          drawerFaculty
+            ? faculty.find((f) => f.id === drawerFaculty.id) || drawerFaculty
+            : null
+        }
         allFaculty={faculty}
         schedules={schedules}
         clock={clock}

@@ -4,11 +4,14 @@ import {
   CalendarOff,
   ChevronRight,
   DoorOpen,
+  Mail,
   MapPin,
   Moon,
+  Phone,
   Users,
 } from 'lucide-react';
 import { FacultyLiveState, FacultyMember, FacultyStatusInfo } from '../types';
+import { validateEmailAddress, validatePhoneNumber } from '../utils/statusEngine';
 
 interface FacultyCardProps {
   member: FacultyMember;
@@ -59,13 +62,18 @@ export const FacultyCard: React.FC<FacultyCardProps> = ({
   const style = STATE_STYLES[status.state];
   const StatusIcon = style.icon;
 
+  const phoneInfo = member.mobileNumber ? validatePhoneNumber(member.mobileNumber) : null;
+  const emailInfo = member.email ? validateEmailAddress(member.email) : null;
+  const hasPhone = Boolean(phoneInfo?.valid);
+  const hasEmail = Boolean(emailInfo?.valid);
+
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(member)}
-      className="group text-left w-full bg-white border border-slate-200 hover:border-slate-400 rounded-xl p-5 transition-colors flex flex-col justify-between gap-4 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-    >
-      <div className="space-y-2.5 w-full">
+    <article className="group w-full bg-white border border-slate-200 hover:border-slate-400 rounded-xl p-5 transition-colors flex flex-col justify-between gap-3.5">
+      <button
+        type="button"
+        onClick={() => onSelect(member)}
+        className="text-left w-full space-y-2.5 cursor-pointer rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+      >
         {/* Quiet unboxed metadata line */}
         <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
           <div className="truncate">
@@ -92,10 +100,42 @@ export const FacultyCard: React.FC<FacultyCardProps> = ({
             {member.cabin}
           </span>
         </div>
-      </div>
+      </button>
+
+      {/* Direct Contact Actions (only rendered when valid phone or email exists) */}
+      {(hasPhone || hasEmail) && (
+        <div className="w-full space-y-1.5 pt-2.5 border-t border-slate-100">
+          {hasPhone && phoneInfo && (
+            <a
+              href={phoneInfo.telHref}
+              aria-label={`Call Faculty ${member.name}`}
+              title={`Call ${member.name}`}
+              className="flex items-center gap-2 px-2.5 py-2 min-h-[40px] rounded-lg bg-slate-50 hover:bg-blue-50 text-slate-700 hover:text-blue-800 transition-colors text-xs font-medium"
+            >
+              <Phone className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              <span className="font-mono tabular-nums truncate">{phoneInfo.display}</span>
+            </a>
+          )}
+          {hasEmail && emailInfo && (
+            <a
+              href={emailInfo.mailtoHref}
+              aria-label={`Send Email to ${member.name}`}
+              title={`Email ${member.name}`}
+              className="flex items-center gap-2 px-2.5 py-2 min-h-[40px] rounded-lg bg-slate-50 hover:bg-blue-50 text-slate-700 hover:text-blue-800 transition-colors text-xs font-medium"
+            >
+              <Mail className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              <span className="truncate">{emailInfo.email}</span>
+            </a>
+          )}
+        </div>
+      )}
 
       {/* Live Status Footer */}
-      <div className="w-full space-y-3 pt-3 border-t border-slate-100">
+      <button
+        type="button"
+        onClick={() => onSelect(member)}
+        className="text-left w-full space-y-3 pt-3 border-t border-slate-100 cursor-pointer rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+      >
         <div className={`rounded-lg border px-3 py-2.5 ${style.surface}`}>
           <div className={`flex items-center gap-2 text-xs font-semibold ${style.text}`}>
             <StatusIcon className="w-3.5 h-3.5 shrink-0" />
@@ -108,7 +148,7 @@ export const FacultyCard: React.FC<FacultyCardProps> = ({
           <span>Schedule &amp; meeting request</span>
           <ChevronRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-0.5" />
         </div>
-      </div>
-    </button>
+      </button>
+    </article>
   );
 };
