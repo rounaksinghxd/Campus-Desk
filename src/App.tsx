@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AdminPanelView } from './components/AdminPanelView';
+import { DepartmentEventsView } from './components/DepartmentEventsView';
 import { FacultyCard } from './components/FacultyCard';
 import { FacultyDetailDrawer } from './components/FacultyDetailDrawer';
 import { FacultyPortalView } from './components/FacultyPortalView';
@@ -9,6 +10,7 @@ import { WorkspaceToolbar } from './components/WorkspaceToolbar';
 import {
   AuthSession,
   ClockConfig,
+  DepartmentEvent,
   FacultyLiveState,
   FacultyMember,
   FacultyStatusInfo,
@@ -21,9 +23,15 @@ export default function App() {
   const [faculty, setFaculty] = useState<FacultyMember[]>([]);
   const [schedules, setSchedules] = useState<ScheduleSlot[]>([]);
   const [departments, setDepartments] = useState<string[]>([]);
+  const [events, setEvents] = useState<DepartmentEvent[]>([]);
   const [adminConfigured, setAdminConfigured] = useState<boolean>(true);
   const [loading, setLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Portal sub-tab routing for Manage Events shortcut
+  const [adminInitialTab, setAdminInitialTab] = useState<'directory' | 'events'>('directory');
+  const [facultyInitialTab, setFacultyInitialTab] = useState<'requests' | 'schedule' | 'events'>('requests');
+  const [eventToEdit, setEventToEdit] = useState<DepartmentEvent | null>(null);
 
   // Filters
   const [selectedDepartment, setSelectedDepartment] = useState<string>('All');
@@ -64,9 +72,22 @@ export default function App() {
     }
   }, []);
 
+  const loadEvents = useCallback(async () => {
+    try {
+      const res = await fetch('/api/events');
+      if (res.ok) {
+        const data = await res.json();
+        setEvents(data.events || []);
+      }
+    } catch {
+      // Handled independently inside DepartmentEventsView
+    }
+  }, []);
+
   useEffect(() => {
     loadDirectory();
-  }, [loadDirectory]);
+    loadEvents();
+  }, [loadDirectory, loadEvents]);
 
   // Keep live clock current every 15 seconds when useLiveTime is enabled
   useEffect(() => {
@@ -131,11 +152,32 @@ export default function App() {
     if (target) setDrawerFaculty(target);
   };
 
+  const loggedInFacultyDepartment = useMemo(() => {
+    if (session?.role !== 'faculty' || !session.facultyId) return undefined;
+    return faculty.find((f) => f.id === session.facultyId)?.department;
+  }, [session, faculty]);
+
+  const handleNavigateManageEvents = (editTarget?: DepartmentEvent) => {
+    setEventToEdit(editTarget || null);
+    if (session?.role === 'admin') {
+      setAdminInitialTab('events');
+      setActiveTab('admin');
+    } else if (session?.role === 'faculty') {
+      setFacultyInitialTab('events');
+      setActiveTab('faculty');
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
       <TopBar
         activeTab={activeTab}
-        onSelectTab={setActiveTab}
+        onSelectTab={(tab) => {
+          if (tab === 'admin') setAdminInitialTab('directory');
+          if (tab === 'faculty') setFacultyInitialTab('requests');
+          setEventToEdit(null);
+          setActiveTab(tab);
+        }}
         session={session}
         onLogout={() => setSession(null)}
         onQuickBook={handleQuickBook}
@@ -261,15 +303,29 @@ export default function App() {
           </>
         )}
 
+        {activeTab === 'events' && (
+          <DepartmentEventsView
+            departments={departments}
+            session={session}
+            userDepartment={loggedInFacultyDepartment}
+            onNavigateManage={handleNavigateManageEvents}
+          />
+        )}
+
         {activeTab === 'track' && <TrackRequestView />}
 
         {activeTab === 'faculty' && (
           <FacultyPortalView
             faculty={faculty}
             schedules={schedules}
+            departments={departments}
+            events={events}
             session={session}
             onAuthenticated={setSession}
             onDirectoryRefresh={loadDirectory}
+            onEventsChanged={loadEvents}
+            initialTab={facultyInitialTab}
+            initialEditEvent={eventToEdit}
           />
         )}
 
@@ -277,10 +333,15 @@ export default function App() {
           <AdminPanelView
             faculty={faculty}
             schedules={schedules}
+            departments={departments}
+            events={events}
             adminConfigured={adminConfigured}
             session={session}
             onAuthenticated={setSession}
             onDirectoryRefresh={loadDirectory}
+            onEventsChanged={loadEvents}
+            initialTab={adminInitialTab}
+            initialEditEvent={eventToEdit}
           />
         )}
       </main>

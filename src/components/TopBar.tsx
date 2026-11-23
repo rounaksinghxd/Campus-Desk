@@ -1,7 +1,7 @@
 import React from 'react';
 import { AuthSession } from '../types';
 
-export type ActiveTab = 'directory' | 'track' | 'faculty' | 'admin';
+export type ActiveTab = 'directory' | 'events' | 'track' | 'faculty' | 'admin';
 
 interface TopBarProps {
   activeTab: ActiveTab;
@@ -20,6 +20,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 }) => {
   const navItems: Array<{ id: ActiveTab; label: string }> = [
     { id: 'directory', label: 'Directory' },
+    { id: 'events', label: 'Department Events' },
     { id: 'track', label: 'Track Request' },
     { id: 'faculty', label: 'Faculty Portal' },
     { id: 'admin', label: 'Admin' },

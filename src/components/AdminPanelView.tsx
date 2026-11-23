@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Download,
   FileSpreadsheet,
@@ -8,16 +8,22 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import { AuthSession, FacultyMember, ScheduleSlot } from '../types';
+import { AuthSession, DepartmentEvent, FacultyMember, ScheduleSlot } from '../types';
 import { parseFacultyCsvText, parseScheduleCsvText } from '../utils/statusEngine';
+import { EventManagerPanel } from './EventManagerPanel';
 
 interface AdminPanelViewProps {
   faculty: FacultyMember[];
   schedules: ScheduleSlot[];
+  departments: string[];
+  events: DepartmentEvent[];
   adminConfigured: boolean;
   session: AuthSession | null;
   onAuthenticated: (session: AuthSession) => void;
   onDirectoryRefresh: () => Promise<void>;
+  onEventsChanged: () => Promise<void>;
+  initialTab?: 'directory' | 'events';
+  initialEditEvent?: DepartmentEvent | null;
 }
 
 const SAMPLE_FACULTY_UPLOAD = `Id,Faculty Names,Room Nos.,Department,Designation,Leave Until
@@ -33,14 +39,24 @@ AYC,Mon,10:00,11:30,Class,CS402 Design & Analysis of Algorithms,B1 LH 1.04`;
 export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   faculty,
   schedules,
+  departments,
+  events,
   adminConfigured,
   session,
   onAuthenticated,
   onDirectoryRefresh,
+  onEventsChanged,
+  initialTab = 'directory',
+  initialEditEvent = null,
 }) => {
+  const [adminTab, setAdminTab] = useState<'directory' | 'events'>(initialTab);
   const [passcode, setPasscode] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
+
+  useEffect(() => {
+    setAdminTab(initialTab);
+  }, [initialTab]);
 
   // CSV importer states
   const [facultyCsv, setFacultyCsv] = useState('');
@@ -276,26 +292,63 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Admin Header */}
-      <div className="bg-white border border-slate-200 rounded-xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="space-y-1">
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            Admin Schedule &amp; Directory Manager
+            Admin Schedule, Directory &amp; Events Manager
           </h1>
           <p className="text-sm text-slate-600">
-            Upload or paste your Faculty &amp; Staff CSV and Weekly Schedule CSV, or manage cabin assignments and leave dates below.
+            Upload or paste Faculty &amp; Schedule CSVs, manage leave dates, or publish and maintain Department Events.
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={handleResetSample}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          <span>Restore Sample Data</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
+          <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+            <button
+              type="button"
+              onClick={() => setAdminTab('directory')}
+              className={`px-3.5 py-2 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                adminTab === 'directory'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Directory &amp; CSVs
+            </button>
+            <button
+              type="button"
+              onClick={() => setAdminTab('events')}
+              className={`px-3.5 py-2 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                adminTab === 'events'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Department Events ({events.length})
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleResetSample}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Restore Sample Data</span>
+          </button>
+        </div>
       </div>
 
+      {adminTab === 'events' ? (
+        <EventManagerPanel
+          session={session}
+          departments={departments}
+          events={events}
+          initialEditEvent={initialEditEvent}
+          onEventsChanged={onEventsChanged}
+        />
+      ) : (
+        <>
       {/* Dual CSV Upload / Paste Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
         {/* CSV 1: Faculty & Staff */}
@@ -676,6 +729,8 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
           </table>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 };

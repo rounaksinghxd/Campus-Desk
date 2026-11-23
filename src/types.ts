@@ -79,3 +79,41 @@ export interface AuthSession {
   facultyId?: string;
   facultyName?: string;
 }
+
+export type EventCategory =
+  | 'Seminar'
+  | 'Technical Talk'
+  | 'Workshop'
+  | 'Hackathon'
+  | 'Competition'
+  | 'Cultural Event'
+  | 'Webinar'
+  | 'Other';
+
+export type EventRegistrationStatus =
+  | 'upcoming'
+  | 'open'
+  | 'closed'
+  | 'completed';
+
+export interface DepartmentEvent {
+  id: string;
+  title: string;
+  description: string;
+  department: string;
+  category: EventCategory;
+  eventDate: string; // YYYY-MM-DD
+  startTime: string; // HH:MM
+  endTime: string;   // HH:MM
+  venue: string;
+  organizer: string;
+  bannerImage?: string;
+  registrationLink?: string;
+  registrationStatus: EventRegistrationStatus;
+  isDemo?: boolean;
+  createdByRole?: 'admin' | 'faculty';
+  createdById?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+

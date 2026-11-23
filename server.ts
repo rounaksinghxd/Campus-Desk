@@ -22,7 +22,14 @@ import {
   parseScheduleCsvText,
   parseTimeToMinutes,
 } from './src/utils/statusEngine';
-import { DayOfWeek, MeetingRequest, ScheduleSlot } from './src/types';
+import {
+  DayOfWeek,
+  DepartmentEvent,
+  EventCategory,
+  EventRegistrationStatus,
+  MeetingRequest,
+  ScheduleSlot,
+} from './src/types';
 
 interface AuthedRequest extends Request {
   auth?: TokenPayload;
@@ -58,6 +65,88 @@ function requireRole(role: 'faculty' | 'admin') {
   };
 }
 
+function requireCoordinatorOrAdmin() {
+  return (req: AuthedRequest, res: Response, next: NextFunction) => {
+    const token = extractBearer(req);
+    if (!token) {
+      res.status(401).json({ error: 'Authentication required. Only admins or faculty coordinators can manage events.' });
+      return;
+    }
+    const payload = verifySessionToken(token);
+    if (!payload) {
+      res.status(401).json({ error: 'Session expired. Please sign in again.' });
+      return;
+    }
+    if (payload.role === 'admin') {
+      req.auth = payload;
+      next();
+      return;
+    }
+    if (payload.role === 'faculty' && payload.facultyId) {
+      req.auth = payload;
+      next();
+      return;
+    }
+    res.status(403).json({ error: 'Insufficient permissions to manage events.' });
+  };
+}
+
+const VALID_EVENT_CATEGORIES: EventCategory[] = [
+  'Seminar',
+  'Technical Talk',
+  'Workshop',
+  'Hackathon',
+  'Competition',
+  'Cultural Event',
+  'Webinar',
+  'Other',
+];
+
+const VALID_REG_STATUSES: EventRegistrationStatus[] = [
+  'upcoming',
+  'open',
+  'closed',
+  'completed',
+];
+
+function isSafeHttpUrl(raw: string): boolean {
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function isSafeBannerInput(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed) return true;
+  if (trimmed.length > 2_000_000) return false;
+  if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(trimmed)) {
+    return true;
+  }
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
+    return true;
+  }
+  return isSafeHttpUrl(trimmed);
+}
+
+function getDynamicDepartments(): string[] {
+  const db = loadDb();
+  const set = new Set<string>();
+  for (const f of db.faculty) {
+    if (f.department && f.department.trim()) {
+      set.add(f.department.trim());
+    }
+  }
+  for (const ev of db.events) {
+    if (ev.department && ev.department.trim()) {
+      set.add(ev.department.trim());
+    }
+  }
+  return Array.from(set).sort();
+}
+
 function isAdminConfigured(): boolean {
   const envPass = (process.env.ADMIN_PASSCODE || '').trim();
   if (envPass.length > 0) return true;
@@ -67,7 +156,7 @@ function isAdminConfigured(): boolean {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '4mb' }));
 
   // Health endpoint
   app.get('/api/health', (_req, res) => {
@@ -87,6 +176,349 @@ async function startServer() {
       departments,
       adminConfigured: isAdminConfigured(),
     });
+  });
+
+  // Dynamic departments endpoint
+  app.get('/api/departments', (_req, res) => {
+    res.json({ departments: getDynamicDepartments() });
+  });
+
+  // --- Department Events Public Endpoints ---
+  app.get('/api/events', (req, res) => {
+    const db = loadDb();
+    const deptFilter = typeof req.query.department === 'string' ? req.query.department.trim() : '';
+    const categoryFilter = typeof req.query.category === 'string' ? req.query.category.trim() : '';
+    const searchFilter = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
+    const upcomingOnly = req.query.upcoming === 'true';
+    const regOpenOnly = req.query.registrationOpen === 'true';
+    const sortDir = req.query.sort === 'desc' ? 'desc' : 'asc';
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    let list = [...db.events];
+
+    if (deptFilter && deptFilter !== 'All') {
+      list = list.filter((e) => e.department.toLowerCase() === deptFilter.toLowerCase());
+    }
+    if (categoryFilter && categoryFilter !== 'All') {
+      list = list.filter((e) => e.category.toLowerCase() === categoryFilter.toLowerCase());
+    }
+    if (searchFilter) {
+      list = list.filter(
+        (e) =>
+          e.title.toLowerCase().includes(searchFilter) ||
+          e.description.toLowerCase().includes(searchFilter) ||
+          e.venue.toLowerCase().includes(searchFilter) ||
+          e.organizer.toLowerCase().includes(searchFilter)
+      );
+    }
+    if (upcomingOnly) {
+      list = list.filter(
+        (e) =>
+          e.registrationStatus !== 'completed' &&
+          e.eventDate >= todayStr
+      );
+    }
+    if (regOpenOnly) {
+      list = list.filter((e) => e.registrationStatus === 'open');
+    }
+
+    list.sort((a, b) => {
+      const cmp = `${a.eventDate}T${a.startTime}`.localeCompare(
+        `${b.eventDate}T${b.startTime}`
+      );
+      return sortDir === 'desc' ? -cmp : cmp;
+    });
+
+    res.json({
+      events: list,
+      departments: getDynamicDepartments(),
+    });
+  });
+
+  app.get('/api/events/:id', (req, res) => {
+    const db = loadDb();
+    const event = db.events.find((e) => e.id === req.params.id);
+    if (!event) {
+      res.status(404).json({ error: 'Event not found.' });
+      return;
+    }
+    res.json({ event });
+  });
+
+  // --- Protected Event Management Endpoints (Admin or Faculty Coordinator) ---
+  app.post('/api/events', requireCoordinatorOrAdmin(), (req: AuthedRequest, res) => {
+    const {
+      title,
+      description,
+      department,
+      category,
+      eventDate,
+      startTime,
+      endTime,
+      venue,
+      organizer,
+      bannerImage,
+      registrationLink,
+      registrationStatus,
+    } = req.body ?? {};
+
+    if (
+      typeof title !== 'string' ||
+      typeof description !== 'string' ||
+      typeof department !== 'string' ||
+      typeof eventDate !== 'string' ||
+      typeof startTime !== 'string' ||
+      typeof endTime !== 'string' ||
+      typeof venue !== 'string' ||
+      typeof organizer !== 'string'
+    ) {
+      res.status(400).json({ error: 'All required event fields must be provided.' });
+      return;
+    }
+
+    const cleanTitle = title.trim();
+    const cleanDesc = description.trim();
+    const cleanDept = department.trim();
+    const cleanVenue = venue.trim();
+    const cleanOrganizer = organizer.trim();
+    const cleanDate = eventDate.trim();
+    const cleanStart = normalizeTime24(startTime.trim());
+    const cleanEnd = normalizeTime24(endTime.trim());
+
+    if (cleanTitle.length < 3 || cleanTitle.length > 140) {
+      res.status(400).json({ error: 'Event title must be between 3 and 140 characters.' });
+      return;
+    }
+    if (cleanDesc.length < 10 || cleanDesc.length > 2000) {
+      res.status(400).json({ error: 'Description must be between 10 and 2000 characters.' });
+      return;
+    }
+    if (!cleanDept || !cleanVenue || !cleanOrganizer) {
+      res.status(400).json({ error: 'Department, venue, and organizer are required.' });
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+      res.status(400).json({ error: 'Event date must be in YYYY-MM-DD format.' });
+      return;
+    }
+    if (parseTimeToMinutes(cleanEnd) <= parseTimeToMinutes(cleanStart)) {
+      res.status(400).json({ error: 'Event end time must be after start time.' });
+      return;
+    }
+
+    const cleanCategory: EventCategory = VALID_EVENT_CATEGORIES.includes(category)
+      ? category
+      : 'Other';
+    const cleanRegStatus: EventRegistrationStatus = VALID_REG_STATUSES.includes(
+      registrationStatus
+    )
+      ? registrationStatus
+      : 'upcoming';
+
+    let cleanRegLink: string | undefined;
+    if (typeof registrationLink === 'string' && registrationLink.trim()) {
+      const trimmedLink = registrationLink.trim();
+      if (!isSafeHttpUrl(trimmedLink)) {
+        res.status(400).json({ error: 'Registration link must be a valid http:// or https:// URL.' });
+        return;
+      }
+      cleanRegLink = trimmedLink;
+    }
+
+    let cleanBanner: string | undefined;
+    if (typeof bannerImage === 'string' && bannerImage.trim()) {
+      const trimmedBanner = bannerImage.trim();
+      if (!isSafeBannerInput(trimmedBanner)) {
+        res.status(400).json({ error: 'Invalid banner image URL or image exceeds size limit.' });
+        return;
+      }
+      cleanBanner = trimmedBanner;
+    }
+
+    const db = loadDb();
+    if (req.auth!.role === 'faculty') {
+      const fac = db.faculty.find(
+        (f) => f.id.toUpperCase() === req.auth!.facultyId!.toUpperCase()
+      );
+      if (!fac) {
+        res.status(403).json({ error: 'Faculty account not found.' });
+        return;
+      }
+      if (fac.department.toLowerCase() !== cleanDept.toLowerCase()) {
+        res.status(403).json({
+          error: `Faculty coordinators can only create events for their own department (${fac.department}).`,
+        });
+        return;
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    const newEvent: DepartmentEvent = {
+      id: `EVT-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+      title: cleanTitle,
+      description: cleanDesc,
+      department: cleanDept,
+      category: cleanCategory,
+      eventDate: cleanDate,
+      startTime: cleanStart,
+      endTime: cleanEnd,
+      venue: cleanVenue,
+      organizer: cleanOrganizer,
+      bannerImage: cleanBanner,
+      registrationLink: cleanRegLink,
+      registrationStatus: cleanRegStatus,
+      isDemo: false,
+      createdByRole: req.auth!.role,
+      createdById: req.auth!.facultyId || 'admin',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    db.events.unshift(newEvent);
+    saveDb(db);
+    res.status(201).json({ event: newEvent });
+  });
+
+  app.delete('/api/events/demo/clear', requireRole('admin'), (_req, res) => {
+    const db = loadDb();
+    const before = db.events.length;
+    db.events = db.events.filter((e) => !e.isDemo);
+    saveDb(db);
+    res.json({ removedCount: before - db.events.length, events: db.events });
+  });
+
+  app.patch('/api/events/:id', requireCoordinatorOrAdmin(), (req: AuthedRequest, res) => {
+    const db = loadDb();
+    const target = db.events.find((e) => e.id === req.params.id);
+    if (!target) {
+      res.status(404).json({ error: 'Event not found.' });
+      return;
+    }
+
+    if (req.auth!.role === 'faculty') {
+      const fac = db.faculty.find(
+        (f) => f.id.toUpperCase() === req.auth!.facultyId!.toUpperCase()
+      );
+      if (
+        !fac ||
+        (fac.department.toLowerCase() !== target.department.toLowerCase() &&
+          target.createdById !== fac.id)
+      ) {
+        res.status(403).json({
+          error: 'You can only edit events belonging to your department.',
+        });
+        return;
+      }
+    }
+
+    const {
+      title,
+      description,
+      department,
+      category,
+      eventDate,
+      startTime,
+      endTime,
+      venue,
+      organizer,
+      bannerImage,
+      registrationLink,
+      registrationStatus,
+    } = req.body ?? {};
+
+    if (typeof title === 'string' && title.trim().length >= 3) {
+      target.title = title.trim().slice(0, 140);
+    }
+    if (typeof description === 'string' && description.trim().length >= 10) {
+      target.description = description.trim().slice(0, 2000);
+    }
+    if (typeof department === 'string' && department.trim()) {
+      if (req.auth!.role === 'admin') {
+        target.department = department.trim().slice(0, 100);
+      }
+    }
+    if (VALID_EVENT_CATEGORIES.includes(category)) {
+      target.category = category;
+    }
+    if (typeof eventDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(eventDate.trim())) {
+      target.eventDate = eventDate.trim();
+    }
+    if (typeof startTime === 'string' && startTime.trim()) {
+      target.startTime = normalizeTime24(startTime.trim());
+    }
+    if (typeof endTime === 'string' && endTime.trim()) {
+      target.endTime = normalizeTime24(endTime.trim());
+    }
+    if (parseTimeToMinutes(target.endTime) <= parseTimeToMinutes(target.startTime)) {
+      res.status(400).json({ error: 'Event end time must be after start time.' });
+      return;
+    }
+    if (typeof venue === 'string' && venue.trim()) {
+      target.venue = venue.trim().slice(0, 120);
+    }
+    if (typeof organizer === 'string' && organizer.trim()) {
+      target.organizer = organizer.trim().slice(0, 140);
+    }
+    if (VALID_REG_STATUSES.includes(registrationStatus)) {
+      target.registrationStatus = registrationStatus;
+    }
+    if (typeof registrationLink === 'string') {
+      const trimmedLink = registrationLink.trim();
+      if (!trimmedLink) {
+        target.registrationLink = undefined;
+      } else if (!isSafeHttpUrl(trimmedLink)) {
+        res.status(400).json({ error: 'Registration link must be a valid http:// or https:// URL.' });
+        return;
+      } else {
+        target.registrationLink = trimmedLink;
+      }
+    }
+    if (typeof bannerImage === 'string') {
+      const trimmedBanner = bannerImage.trim();
+      if (!trimmedBanner) {
+        target.bannerImage = undefined;
+      } else if (!isSafeBannerInput(trimmedBanner)) {
+        res.status(400).json({ error: 'Invalid banner image URL or image exceeds size limit.' });
+        return;
+      } else {
+        target.bannerImage = trimmedBanner;
+      }
+    }
+
+    target.isDemo = false;
+    target.updatedAt = new Date().toISOString();
+    saveDb(db);
+    res.json({ event: target });
+  });
+
+  app.delete('/api/events/:id', requireCoordinatorOrAdmin(), (req: AuthedRequest, res) => {
+    const db = loadDb();
+    const target = db.events.find((e) => e.id === req.params.id);
+    if (!target) {
+      res.status(404).json({ error: 'Event not found.' });
+      return;
+    }
+
+    if (req.auth!.role === 'faculty') {
+      const fac = db.faculty.find(
+        (f) => f.id.toUpperCase() === req.auth!.facultyId!.toUpperCase()
+      );
+      if (
+        !fac ||
+        (fac.department.toLowerCase() !== target.department.toLowerCase() &&
+          target.createdById !== fac.id)
+      ) {
+        res.status(403).json({
+          error: 'You can only delete events belonging to your department.',
+        });
+        return;
+      }
+    }
+
+    db.events = db.events.filter((e) => e.id !== req.params.id);
+    saveDb(db);
+    res.json({ ok: true });
   });
 
   // Student submits a meeting request
@@ -628,6 +1060,7 @@ async function startServer() {
     res.json({
       faculty: db.faculty.map(toPublicFaculty),
       schedules: db.schedules,
+      events: db.events,
     });
   });
 

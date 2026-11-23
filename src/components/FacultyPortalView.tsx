@@ -12,6 +12,7 @@ import {
 import {
   AuthSession,
   DayOfWeek,
+  DepartmentEvent,
   FacultyMember,
   MeetingRequest,
   MeetingRequestStatus,
@@ -23,21 +24,32 @@ import {
   formatTimeDisplay,
   parseTimeToMinutes,
 } from '../utils/statusEngine';
+import { EventManagerPanel } from './EventManagerPanel';
 
 interface FacultyPortalViewProps {
   faculty: FacultyMember[];
   schedules: ScheduleSlot[];
+  departments: string[];
+  events: DepartmentEvent[];
   session: AuthSession | null;
   onAuthenticated: (session: AuthSession) => void;
   onDirectoryRefresh: () => Promise<void>;
+  onEventsChanged: () => Promise<void>;
+  initialTab?: 'requests' | 'schedule' | 'events';
+  initialEditEvent?: DepartmentEvent | null;
 }
 
 export const FacultyPortalView: React.FC<FacultyPortalViewProps> = ({
   faculty,
   schedules,
+  departments,
+  events,
   session,
   onAuthenticated,
   onDirectoryRefresh,
+  onEventsChanged,
+  initialTab = 'requests',
+  initialEditEvent = null,
 }) => {
   const [authMode, setAuthMode] = useState<'login' | 'activate'>('login');
   const [facultyIdInput, setFacultyIdInput] = useState('AC');
@@ -46,7 +58,11 @@ export const FacultyPortalView: React.FC<FacultyPortalViewProps> = ({
   const [authLoading, setAuthLoading] = useState(false);
 
   // Authenticated workspace state
-  const [portalTab, setPortalTab] = useState<'requests' | 'schedule'>('requests');
+  const [portalTab, setPortalTab] = useState<'requests' | 'schedule' | 'events'>(initialTab);
+
+  useEffect(() => {
+    setPortalTab(initialTab);
+  }, [initialTab]);
   const [requests, setRequests] = useState<MeetingRequest[]>([]);
   const [requestFilter, setRequestFilter] = useState<'all' | MeetingRequestStatus>('all');
   const [loadingRequests, setLoadingRequests] = useState(false);
@@ -407,7 +423,7 @@ export const FacultyPortalView: React.FC<FacultyPortalViewProps> = ({
           <h1 className="text-2xl font-bold text-slate-900">{activeFaculty.name}</h1>
         </div>
 
-        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg shrink-0">
+        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg shrink-0 overflow-x-auto">
           <button
             type="button"
             onClick={() => setPortalTab('requests')}
@@ -430,10 +446,31 @@ export const FacultyPortalView: React.FC<FacultyPortalViewProps> = ({
           >
             My Schedule &amp; Leave
           </button>
+          <button
+            type="button"
+            onClick={() => setPortalTab('events')}
+            className={`px-3.5 py-2 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+              portalTab === 'events'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Department Events
+          </button>
         </div>
       </div>
 
-      {portalTab === 'requests' ? (
+      {portalTab === 'events' ? (
+        <EventManagerPanel
+          session={session}
+          departments={departments}
+          events={events}
+          lockedDepartment={activeFaculty.department}
+          defaultOrganizer={activeFaculty.name}
+          initialEditEvent={initialEditEvent}
+          onEventsChanged={onEventsChanged}
+        />
+      ) : portalTab === 'requests' ? (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-1.5 overflow-x-auto">

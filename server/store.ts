@@ -2,11 +2,13 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import {
+  DepartmentEvent,
   FacultyMember,
   MeetingRequest,
   ScheduleSlot,
 } from '../src/types';
 import {
+  INITIAL_DEMO_EVENTS,
   INITIAL_FACULTY,
   INITIAL_REQUESTS,
   INITIAL_SCHEDULES,
@@ -18,6 +20,7 @@ export interface CampusDatabase {
   faculty: StoredFaculty[];
   schedules: ScheduleSlot[];
   requests: MeetingRequest[];
+  events: DepartmentEvent[];
 }
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -103,6 +106,7 @@ function createInitialDb(): CampusDatabase {
     faculty: structuredClone(INITIAL_FACULTY),
     schedules: structuredClone(INITIAL_SCHEDULES),
     requests: structuredClone(INITIAL_REQUESTS),
+    events: structuredClone(INITIAL_DEMO_EVENTS),
   };
 }
 
@@ -113,13 +117,25 @@ export function loadDb(): CampusDatabase {
   try {
     if (fs.existsSync(DATA_FILE)) {
       const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-      const parsed = JSON.parse(raw) as CampusDatabase;
+      const parsed = JSON.parse(raw) as Partial<CampusDatabase>;
       if (
         Array.isArray(parsed.faculty) &&
         Array.isArray(parsed.schedules) &&
         Array.isArray(parsed.requests)
       ) {
-        cachedDb = parsed;
+        const normalized: CampusDatabase = {
+          adminPasscodeHash: parsed.adminPasscodeHash,
+          faculty: parsed.faculty,
+          schedules: parsed.schedules,
+          requests: parsed.requests,
+          events: Array.isArray(parsed.events)
+            ? parsed.events
+            : structuredClone(INITIAL_DEMO_EVENTS),
+        };
+        cachedDb = normalized;
+        if (!Array.isArray(parsed.events)) {
+          saveDb(normalized);
+        }
         return cachedDb;
       }
     }
