@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { AuthSession, DepartmentEvent, EventCategory } from '../types';
+import { apiFetch, openExternalUrl } from '../utils/api';
 import { formatTimeDisplay } from '../utils/statusEngine';
 import {
   EVENT_STATUS_META,
@@ -25,6 +26,8 @@ interface DepartmentEventsViewProps {
   session: AuthSession | null;
   userDepartment?: string;
   onNavigateManage: (editTarget?: DepartmentEvent) => void;
+  onModalOpenChange?: (isOpen: boolean) => void;
+  closeModalSignal?: number;
 }
 
 export const DepartmentEventsView: React.FC<DepartmentEventsViewProps> = ({
@@ -32,6 +35,8 @@ export const DepartmentEventsView: React.FC<DepartmentEventsViewProps> = ({
   session,
   userDepartment,
   onNavigateManage,
+  onModalOpenChange,
+  closeModalSignal = 0,
 }) => {
   const [events, setEvents] = useState<DepartmentEvent[]>([]);
   const [apiDepartments, setApiDepartments] = useState<string[]>([]);
@@ -48,19 +53,33 @@ export const DepartmentEventsView: React.FC<DepartmentEventsViewProps> = ({
 
   const [selectedEvent, setSelectedEvent] = useState<DepartmentEvent | null>(null);
 
+  useEffect(() => {
+    onModalOpenChange?.(Boolean(selectedEvent));
+  }, [selectedEvent, onModalOpenChange]);
+
+  useEffect(() => {
+    if (closeModalSignal > 0) {
+      setSelectedEvent(null);
+    }
+  }, [closeModalSignal]);
+
   const loadEvents = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/events');
+      const res = await apiFetch('/api/events');
       if (!res.ok) throw new Error('Failed to load department events');
       const data = await res.json();
       setEvents(data.events || []);
       if (Array.isArray(data.departments)) {
         setApiDepartments(data.departments);
       }
-    } catch {
-      setError('Unable to load department events right now. Please try again.');
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message.includes('Backend server URL')
+          ? err.message
+          : 'Unable to load department events right now. Please check your internet connection and retry.'
+      );
     } finally {
       setLoading(false);
     }
@@ -132,7 +151,7 @@ export const DepartmentEventsView: React.FC<DepartmentEventsViewProps> = ({
 
   const handleDeleteFromModal = async (ev: DepartmentEvent) => {
     if (!session?.token) return;
-    const res = await fetch(`/api/events/${encodeURIComponent(ev.id)}`, {
+    const res = await apiFetch(`/api/events/${encodeURIComponent(ev.id)}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${session.token}` },
     });
@@ -472,6 +491,9 @@ export const DepartmentEventsView: React.FC<DepartmentEventsViewProps> = ({
                         href={safeRegHref}
                         target="_blank"
                         rel="noopener noreferrer"
+                        onClick={(e) => {
+                          void openExternalUrl(safeRegHref, e);
+                        }}
                         className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:text-blue-900 whitespace-nowrap"
                       >
                         <span>Register</span>

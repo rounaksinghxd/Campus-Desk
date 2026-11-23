@@ -161,6 +161,44 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '4mb' }));
 
+  const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  const defaultMobileOrigins = new Set([
+    'https://localhost',
+    'http://localhost',
+    'capacitor://localhost',
+    ...(process.env.APP_URL ? [process.env.APP_URL.trim().replace(/\/+$/, '')] : []),
+    ...envOrigins,
+  ]);
+
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin) {
+      const normalizedOrigin = origin.trim().replace(/\/+$/, '');
+      if (
+        defaultMobileOrigins.has('*') ||
+        defaultMobileOrigins.has(normalizedOrigin) ||
+        normalizedOrigin.startsWith('http://localhost:') ||
+        normalizedOrigin.startsWith('https://localhost:')
+      ) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader(
+          'Access-Control-Allow-Methods',
+          'GET, POST, PUT, PATCH, DELETE, OPTIONS'
+        );
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      }
+    }
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
   // Health endpoint
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { CalendarClock, CheckCircle2, Clock, Search, XCircle } from 'lucide-react';
 import { MeetingRequest, MeetingRequestStatus } from '../types';
 import { formatTimeDisplay } from '../utils/statusEngine';
+import { apiFetch } from '../utils/api';
 
 const STATUS_BADGE: Record<
   MeetingRequestStatus,
@@ -41,7 +42,7 @@ export const TrackRequestView: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/requests/track?query=${encodeURIComponent(trimmed)}`);
+      const res = await apiFetch(`/api/requests/track?query=${encodeURIComponent(trimmed)}`);
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || 'Could not look up requests.');
@@ -49,8 +50,12 @@ export const TrackRequestView: React.FC = () => {
       } else {
         setResults(data.requests || []);
       }
-    } catch {
-      setError('Network error while checking request status.');
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message && !err.message.includes('fetch')
+          ? err.message
+          : 'Network error while checking request status.'
+      );
     } finally {
       setLoading(false);
     }

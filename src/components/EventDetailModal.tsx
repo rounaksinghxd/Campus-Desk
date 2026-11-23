@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import { AuthSession, DepartmentEvent, EventRegistrationStatus } from '../types';
+import { openExternalUrl } from '../utils/api';
 import { formatTimeDisplay } from '../utils/statusEngine';
 
 interface EventDetailModalProps {
@@ -165,6 +166,9 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
                 href={safeRegHref}
                 target="_blank"
                 rel="noopener noreferrer"
+                onClick={(e) => {
+                  void openExternalUrl(safeRegHref, e);
+                }}
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-slate-900 hover:bg-slate-800 text-white rounded-lg transition-colors whitespace-nowrap shrink-0"
               >
                 <span>Register Externally</span>

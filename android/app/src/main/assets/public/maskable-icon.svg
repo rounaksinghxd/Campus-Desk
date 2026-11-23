@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#0F172A" />
+  <!-- Safe-zone centered emblem (~66% canvas width for Android adaptive/maskable clipping) -->
+  <polygon points="256,136 140,200 372,200" fill="#3B82F6" />
+  <rect x="150" y="206" width="212" height="18" rx="5" fill="#E2E8F0" />
+  <rect x="172" y="236" width="30" height="104" rx="6" fill="#F8FAFC" />
+  <rect x="241" y="236" width="30" height="104" rx="6" fill="#F8FAFC" />
+  <rect x="310" y="236" width="30" height="104" rx="6" fill="#F8FAFC" />
+  <rect x="142" y="350" width="228" height="22" rx="6" fill="#E2E8F0" />
+  <circle cx="356" cy="166" r="24" fill="#1D4ED8" stroke="#0F172A" stroke-width="8" />
+  <circle cx="356" cy="166" r="9" fill="#FFFFFF" />
+</svg>

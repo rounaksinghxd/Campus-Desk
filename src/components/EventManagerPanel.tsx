@@ -14,6 +14,7 @@ import {
   EventRegistrationStatus,
 } from '../types';
 import { formatTimeDisplay } from '../utils/statusEngine';
+import { apiFetch } from '../utils/api';
 import { EVENT_STATUS_META } from './EventDetailModal';
 
 export const EVENT_CATEGORIES: EventCategory[] = [
@@ -158,7 +159,7 @@ export const EventManagerPanel: React.FC<EventManagerPanelProps> = ({
     try {
       const url = editingId ? `/api/events/${encodeURIComponent(editingId)}` : '/api/events';
       const method = editingId ? 'PATCH' : 'POST';
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method,
         headers: {
           'Content-Type': 'application/json',
@@ -189,7 +190,7 @@ export const EventManagerPanel: React.FC<EventManagerPanelProps> = ({
   const handleDelete = async (ev: DepartmentEvent) => {
     setFeedback(null);
     try {
-      const res = await fetch(`/api/events/${encodeURIComponent(ev.id)}`, {
+      const res = await apiFetch(`/api/events/${encodeURIComponent(ev.id)}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${session.token}` },
       });
@@ -209,7 +210,7 @@ export const EventManagerPanel: React.FC<EventManagerPanelProps> = ({
   const handleClearDemoEvents = async () => {
     setFeedback(null);
     try {
-      const res = await fetch('/api/events/demo/clear', {
+      const res = await apiFetch('/api/events/demo/clear', {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${session.token}` },
       });
@@ -318,7 +319,7 @@ export const EventManagerPanel: React.FC<EventManagerPanelProps> = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
           <div>
             <label className="block text-xs font-medium text-slate-700 mb-1">
               Event Date

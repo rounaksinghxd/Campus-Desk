@@ -25,6 +25,7 @@ import {
   validateEmailAddress,
   validatePhoneNumber,
 } from '../utils/statusEngine';
+import { apiFetch } from '../utils/api';
 
 interface FacultyDetailDrawerProps {
   member: FacultyMember | null;
@@ -85,7 +86,7 @@ export const FacultyDetailDrawer: React.FC<FacultyDetailDrawerProps> = ({
     setSubmitting(true);
     setErrorMsg(null);
     try {
-      const res = await fetch('/api/requests', {
+      const res = await apiFetch('/api/requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -105,8 +106,12 @@ export const FacultyDetailDrawer: React.FC<FacultyDetailDrawerProps> = ({
         setSubmittedRequest(data.request);
         setReason('');
       }
-    } catch {
-      setErrorMsg('Network error while sending request.');
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error && err.message && !err.message.includes('fetch')
+          ? err.message
+          : 'Network error while sending request.'
+      );
     } finally {
       setSubmitting(false);
     }

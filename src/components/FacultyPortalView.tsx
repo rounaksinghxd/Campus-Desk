@@ -24,6 +24,7 @@ import {
   formatTimeDisplay,
   parseTimeToMinutes,
 } from '../utils/statusEngine';
+import { apiFetch } from '../utils/api';
 import { EventManagerPanel } from './EventManagerPanel';
 
 interface FacultyPortalViewProps {
@@ -134,13 +135,15 @@ export const FacultyPortalView: React.FC<FacultyPortalViewProps> = ({
   const fetchFacultyRequests = async (token: string) => {
     setLoadingRequests(true);
     try {
-      const res = await fetch('/api/faculty/me/requests', {
+      const res = await apiFetch('/api/faculty/me/requests', {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
         setRequests(data.requests || []);
       }
+    } catch {
+      // Request list remains unchanged if offline
     } finally {
       setLoadingRequests(false);
     }
@@ -159,7 +162,7 @@ export const FacultyPortalView: React.FC<FacultyPortalViewProps> = ({
     const endpoint =
       authMode === 'activate' ? '/api/auth/faculty/activate' : '/api/auth/faculty/login';
     try {
-      const res = await fetch(endpoint, {
+      const res = await apiFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -181,8 +184,12 @@ export const FacultyPortalView: React.FC<FacultyPortalViewProps> = ({
           facultyName: data.faculty.name,
         });
       }
-    } catch {
-      setAuthError('Network error during authentication.');
+    } catch (err) {
+      setAuthError(
+        err instanceof Error && err.message && !err.message.includes('fetch')
+          ? err.message
+          : 'Network error during authentication.'
+      );
     } finally {
       setAuthLoading(false);
     }
@@ -195,7 +202,7 @@ export const FacultyPortalView: React.FC<FacultyPortalViewProps> = ({
     if (!session?.token) return;
     setActionBusyId(reqItem.id);
     try {
-      const res = await fetch(`/api/faculty/me/requests/${reqItem.id}`, {
+      const res = await apiFetch(`/api/faculty/me/requests/${reqItem.id}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -226,48 +233,56 @@ export const FacultyPortalView: React.FC<FacultyPortalViewProps> = ({
     e.preventDefault();
     if (!session?.token) return;
     setProfileMsg(null);
-    const res = await fetch('/api/faculty/me/profile', {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.token}`,
-      },
-      body: JSON.stringify({
-        cabin,
-        leaveStart,
-        leaveUntil,
-        dutyStart,
-        dutyEnd,
-        availabilityNote,
-      }),
-    });
-    if (res.ok) {
-      await onDirectoryRefresh();
-      setProfileMsg('Profile, cabin, and leave dates saved.');
-    } else {
-      const data = await res.json();
-      setProfileMsg(data.error || 'Failed to update profile.');
+    try {
+      const res = await apiFetch('/api/faculty/me/profile', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify({
+          cabin,
+          leaveStart,
+          leaveUntil,
+          dutyStart,
+          dutyEnd,
+          availabilityNote,
+        }),
+      });
+      if (res.ok) {
+        await onDirectoryRefresh();
+        setProfileMsg('Profile, cabin, and leave dates saved.');
+      } else {
+        const data = await res.json();
+        setProfileMsg(data.error || 'Failed to update profile.');
+      }
+    } catch {
+      setProfileMsg('Network error while updating profile.');
     }
   };
 
   const handleSaveSlots = async (slotsToSave: ScheduleSlot[]) => {
     if (!session?.token) return;
     setScheduleMsg(null);
-    const res = await fetch('/api/faculty/me/schedule', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.token}`,
-      },
-      body: JSON.stringify({ slots: slotsToSave }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setEditableSlots(data.schedules);
-      await onDirectoryRefresh();
-      setScheduleMsg('Weekly schedule updated.');
-    } else {
-      setScheduleMsg(data.error || 'Failed to update schedule.');
+    try {
+      const res = await apiFetch('/api/faculty/me/schedule', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify({ slots: slotsToSave }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setEditableSlots(data.schedules);
+        await onDirectoryRefresh();
+        setScheduleMsg('Weekly schedule updated.');
+      } else {
+        setScheduleMsg(data.error || 'Failed to update schedule.');
+      }
+    } catch {
+      setScheduleMsg('Network error while saving weekly schedule.');
     }
   };
 
@@ -275,22 +290,26 @@ export const FacultyPortalView: React.FC<FacultyPortalViewProps> = ({
     e.preventDefault();
     if (!session?.token || !csvScheduleText.trim()) return;
     setScheduleMsg(null);
-    const res = await fetch('/api/faculty/me/schedule', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.token}`,
-      },
-      body: JSON.stringify({ csvText: csvScheduleText }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setEditableSlots(data.schedules);
-      setCsvScheduleText('');
-      await onDirectoryRefresh();
-      setScheduleMsg(`Imported ${data.schedules.length} schedule slots from CSV.`);
-    } else {
-      setScheduleMsg(data.error || 'Could not import CSV schedule.');
+    try {
+      const res = await apiFetch('/api/faculty/me/schedule', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify({ csvText: csvScheduleText }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setEditableSlots(data.schedules);
+        setCsvScheduleText('');
+        await onDirectoryRefresh();
+        setScheduleMsg(`Imported ${data.schedules.length} schedule slots from CSV.`);
+      } else {
+        setScheduleMsg(data.error || 'Could not import CSV schedule.');
+      }
+    } catch {
+      setScheduleMsg('Network error while importing CSV schedule.');
     }
   };
 
@@ -710,7 +729,7 @@ export const FacultyPortalView: React.FC<FacultyPortalViewProps> = ({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
                   Leave Start (optional)

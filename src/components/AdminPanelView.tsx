@@ -15,6 +15,7 @@ import {
   validateEmailAddress,
   validatePhoneNumber,
 } from '../utils/statusEngine';
+import { apiFetch } from '../utils/api';
 import { EventManagerPanel } from './EventManagerPanel';
 
 interface AdminPanelViewProps {
@@ -91,7 +92,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     setAuthError(null);
     const endpoint = adminConfigured ? '/api/auth/admin/login' : '/api/auth/admin/claim';
     try {
-      const res = await fetch(endpoint, {
+      const res = await apiFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ passcode }),
@@ -104,8 +105,12 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         await onDirectoryRefresh();
         onAuthenticated({ role: 'admin', token: data.token });
       }
-    } catch {
-      setAuthError('Network error during admin sign in.');
+    } catch (err) {
+      setAuthError(
+        err instanceof Error && err.message && !err.message.includes('fetch')
+          ? err.message
+          : 'Network error during admin sign in.'
+      );
     } finally {
       setAuthLoading(false);
     }
@@ -126,48 +131,56 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   const handleImportFaculty = async () => {
     if (!session?.token || !facultyCsv.trim()) return;
     setFacultyImportStatus(null);
-    const res = await fetch('/api/admin/import/faculty', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.token}`,
-      },
-      body: JSON.stringify({ csvText: facultyCsv, mode: facultyMode }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      await onDirectoryRefresh();
-      const warnSuffix =
-        data.warnings?.length > 0 ? ` (${data.warnings.length} warnings)` : '';
-      setFacultyImportStatus(
-        `Imported ${data.importedCount} faculty/staff records${warnSuffix}.`
-      );
-    } else {
-      setFacultyImportStatus(data.error || 'Import failed.');
+    try {
+      const res = await apiFetch('/api/admin/import/faculty', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify({ csvText: facultyCsv, mode: facultyMode }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        await onDirectoryRefresh();
+        const warnSuffix =
+          data.warnings?.length > 0 ? ` (${data.warnings.length} warnings)` : '';
+        setFacultyImportStatus(
+          `Imported ${data.importedCount} faculty/staff records${warnSuffix}.`
+        );
+      } else {
+        setFacultyImportStatus(data.error || 'Import failed.');
+      }
+    } catch {
+      setFacultyImportStatus('Network error while importing faculty CSV.');
     }
   };
 
   const handleImportSchedule = async () => {
     if (!session?.token || !scheduleCsv.trim()) return;
     setScheduleImportStatus(null);
-    const res = await fetch('/api/admin/import/schedule', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.token}`,
-      },
-      body: JSON.stringify({ csvText: scheduleCsv, mode: scheduleMode }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      await onDirectoryRefresh();
-      const warnSuffix =
-        data.warnings?.length > 0 ? ` (${data.warnings.length} warnings)` : '';
-      setScheduleImportStatus(
-        `Imported ${data.importedCount} weekly schedule slots${warnSuffix}.`
-      );
-    } else {
-      setScheduleImportStatus(data.error || 'Schedule import failed.');
+    try {
+      const res = await apiFetch('/api/admin/import/schedule', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify({ csvText: scheduleCsv, mode: scheduleMode }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        await onDirectoryRefresh();
+        const warnSuffix =
+          data.warnings?.length > 0 ? ` (${data.warnings.length} warnings)` : '';
+        setScheduleImportStatus(
+          `Imported ${data.importedCount} weekly schedule slots${warnSuffix}.`
+        );
+      } else {
+        setScheduleImportStatus(data.error || 'Schedule import failed.');
+      }
+    } catch {
+      setScheduleImportStatus('Network error while importing schedule CSV.');
     }
   };
 
@@ -188,53 +201,71 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     if (!session?.token) return;
     setRosterError(null);
     setRosterMsg(null);
-    const res = await fetch(`/api/admin/faculty/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.token}`,
-      },
-      body: JSON.stringify({
-        department: editDept,
-        designation: editDesig,
-        cabin: editCabin,
-        mobileNumber: editMobile,
-        email: editEmail,
-        leaveUntil: editLeaveUntil,
-        newPassword: editPassword.trim() || undefined,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      setEditingId(null);
-      await onDirectoryRefresh();
-      setRosterMsg(`Updated ${id}.`);
-    } else {
-      setRosterError(data.error || `Failed to update ${id}.`);
+    try {
+      const res = await apiFetch(`/api/admin/faculty/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify({
+          department: editDept,
+          designation: editDesig,
+          cabin: editCabin,
+          mobileNumber: editMobile,
+          email: editEmail,
+          leaveUntil: editLeaveUntil,
+          newPassword: editPassword.trim() || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setEditingId(null);
+        await onDirectoryRefresh();
+        setRosterMsg(`Updated ${id}.`);
+      } else {
+        setRosterError(data.error || `Failed to update ${id}.`);
+      }
+    } catch {
+      setRosterError(`Network error while updating ${id}.`);
     }
   };
 
   const deleteFaculty = async (id: string) => {
     if (!session?.token) return;
-    const res = await fetch(`/api/admin/faculty/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${session.token}` },
-    });
-    if (res.ok) {
-      await onDirectoryRefresh();
-      setRosterMsg(`Removed ${id} from directory.`);
+    setRosterError(null);
+    try {
+      const res = await apiFetch(`/api/admin/faculty/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${session.token}` },
+      });
+      if (res.ok) {
+        await onDirectoryRefresh();
+        setRosterMsg(`Removed ${id} from directory.`);
+      } else {
+        setRosterError(`Failed to remove ${id}.`);
+      }
+    } catch {
+      setRosterError(`Network error while removing ${id}.`);
     }
   };
 
   const handleResetSample = async () => {
     if (!session?.token) return;
-    const res = await fetch('/api/admin/reset-sample', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${session.token}` },
-    });
-    if (res.ok) {
-      await onDirectoryRefresh();
-      setRosterMsg('Restored default university sample faculty and schedule dataset.');
+    setRosterError(null);
+    try {
+      const res = await apiFetch('/api/admin/reset-sample', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.token}` },
+      });
+      if (res.ok) {
+        await onDirectoryRefresh();
+        setRosterMsg('Restored default university sample faculty and schedule dataset.');
+      } else {
+        setRosterError('Could not restore sample dataset.');
+      }
+    } catch {
+      setRosterError('Network error while restoring sample dataset.');
     }
   };
 

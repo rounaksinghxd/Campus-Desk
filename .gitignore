@@ -7,4 +7,9 @@ coverage/
 .env*
 !.env.example
 data/*.json
+public/assets/aistudio/
+*.jks
+*.keystore
+*.apk
+
 

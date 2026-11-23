@@ -1,4 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { App as CapApp } from '@capacitor/app';
+import { SplashScreen } from '@capacitor/splash-screen';
+import { StatusBar, Style } from '@capacitor/status-bar';
+import { WifiOff } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AdminPanelView } from './components/AdminPanelView';
 import { DepartmentEventsView } from './components/DepartmentEventsView';
 import { FacultyCard } from './components/FacultyCard';
@@ -7,6 +11,7 @@ import { FacultyPortalView } from './components/FacultyPortalView';
 import { ActiveTab, TopBar } from './components/TopBar';
 import { TrackRequestView } from './components/TrackRequestView';
 import { WorkspaceToolbar } from './components/WorkspaceToolbar';
+import { useOnlineStatus } from './hooks/useOnlineStatus';
 import {
   AuthSession,
   ClockConfig,
@@ -16,6 +21,7 @@ import {
   FacultyStatusInfo,
   ScheduleSlot,
 } from './types';
+import { apiFetch, getNativeApiConfigIssue, isNativeApp } from './utils/api';
 import { computeFacultyStatus, getLiveClockValues } from './utils/statusEngine';
 
 export default function App() {
@@ -49,32 +55,46 @@ export default function App() {
     };
   });
 
-  // Selected faculty drawer
+  // Selected faculty drawer & event modal state (for Android hardware back button)
   const [drawerFaculty, setDrawerFaculty] = useState<FacultyMember | null>(null);
+  const [eventModalOpen, setEventModalOpen] = useState<boolean>(false);
+  const [closeEventModalSignal, setCloseEventModalSignal] = useState<number>(0);
 
   // Auth session held strictly in JS memory
   const [session, setSession] = useState<AuthSession | null>(null);
+  const isOnline = useOnlineStatus();
+  const nativeConfigIssue = getNativeApiConfigIssue();
 
   const loadDirectory = useCallback(async () => {
+    setLoading(true);
     try {
       setLoadError(null);
-      const res = await fetch('/api/directory');
-      if (!res.ok) throw new Error('Failed to load directory');
+      const res = await apiFetch('/api/directory');
+      if (!res.ok) throw new Error(`Server returned HTTP ${res.status}`);
       const data = await res.json();
       setFaculty(data.faculty || []);
       setSchedules(data.schedules || []);
       setDepartments(data.departments || []);
       setAdminConfigured(Boolean(data.adminConfigured));
-    } catch {
-      setLoadError('Unable to load campus directory. Please retry.');
+    } catch (err) {
+      const detail = err instanceof Error && err.message ? err.message : '';
+      if (nativeConfigIssue) {
+        setLoadError(nativeConfigIssue);
+      } else if (!isOnline) {
+        setLoadError('You appear to be offline. Reconnect to the internet and tap Retry.');
+      } else if (detail.includes('AbortError')) {
+        setLoadError('Request timed out while connecting to CampusDesk server. Tap Retry.');
+      } else {
+        setLoadError('Unable to reach CampusDesk server. Check your connection and tap Retry.');
+      }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isOnline, nativeConfigIssue]);
 
   const loadEvents = useCallback(async () => {
     try {
-      const res = await fetch('/api/events');
+      const res = await apiFetch('/api/events');
       if (res.ok) {
         const data = await res.json();
         setEvents(data.events || []);
@@ -88,6 +108,52 @@ export default function App() {
     loadDirectory();
     loadEvents();
   }, [loadDirectory, loadEvents]);
+
+  // Configure native Android StatusBar & hide SplashScreen cleanly
+  useEffect(() => {
+    if (!isNativeApp()) return;
+    StatusBar.setOverlaysWebView({ overlay: false }).catch(() => {});
+    StatusBar.setStyle({ style: Style.Light }).catch(() => {});
+    StatusBar.setBackgroundColor({ color: '#FFFFFF' }).catch(() => {});
+    SplashScreen.hide().catch(() => {});
+  }, []);
+
+  // Android hardware back button navigation
+  const backStateRef = useRef({
+    drawerOpen: false,
+    eventModalOpen: false,
+    activeTab: 'directory' as ActiveTab,
+  });
+  backStateRef.current = {
+    drawerOpen: Boolean(drawerFaculty),
+    eventModalOpen,
+    activeTab,
+  };
+
+  useEffect(() => {
+    if (!isNativeApp()) return;
+    let listenerHandle: { remove: () => Promise<void> } | null = null;
+    CapApp.addListener('backButton', () => {
+      const state = backStateRef.current;
+      if (state.drawerOpen) {
+        setDrawerFaculty(null);
+      } else if (state.eventModalOpen) {
+        setCloseEventModalSignal((n) => n + 1);
+      } else if (state.activeTab !== 'directory') {
+        setActiveTab('directory');
+      } else {
+        CapApp.exitApp();
+      }
+    })
+      .then((handle) => {
+        listenerHandle = handle;
+      })
+      .catch(() => {});
+
+    return () => {
+      listenerHandle?.remove().catch(() => {});
+    };
+  }, []);
 
   // Keep live clock current every 15 seconds when useLiveTime is enabled
   useEffect(() => {
@@ -185,7 +251,38 @@ export default function App() {
         onQuickBook={handleQuickBook}
       />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-7 space-y-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-7 space-y-6">
+        {!isOnline && (
+          <div
+            role="status"
+            className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center justify-between gap-3 text-xs text-amber-900"
+          >
+            <div className="flex items-center gap-2 font-medium">
+              <WifiOff className="w-4 h-4 shrink-0 text-amber-700" />
+              <span>You are currently offline. Live schedules and requests require an internet connection.</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                loadDirectory();
+                loadEvents();
+              }}
+              className="px-3 py-1.5 text-xs font-medium bg-amber-900 text-white rounded-lg shrink-0 cursor-pointer"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {nativeConfigIssue && (
+          <div
+            role="alert"
+            className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 text-xs text-rose-900 font-medium"
+          >
+            {nativeConfigIssue}
+          </div>
+        )}
+
         {activeTab === 'directory' && (
           <>
             <WorkspaceToolbar
@@ -311,6 +408,8 @@ export default function App() {
             session={session}
             userDepartment={loggedInFacultyDepartment}
             onNavigateManage={handleNavigateManageEvents}
+            onModalOpenChange={setEventModalOpen}
+            closeModalSignal={closeEventModalSignal}
           />
         )}
 
