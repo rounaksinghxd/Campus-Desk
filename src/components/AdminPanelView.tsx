@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
+  AlertTriangle,
+  CheckCircle2,
   Download,
   FileSpreadsheet,
   KeyRound,
@@ -8,7 +10,14 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import { AuthSession, DepartmentEvent, FacultyMember, ScheduleSlot } from '../types';
+import {
+  AuthSession,
+  DepartmentEvent,
+  FacultyMember,
+  ScheduleImportSummary,
+  ScheduleMetadata,
+  ScheduleSlot,
+} from '../types';
 import {
   parseFacultyCsvText,
   parseScheduleCsvText,
@@ -21,6 +30,7 @@ import { EventManagerPanel } from './EventManagerPanel';
 interface AdminPanelViewProps {
   faculty: FacultyMember[];
   schedules: ScheduleSlot[];
+  scheduleMetadata?: ScheduleMetadata;
   departments: string[];
   events: DepartmentEvent[];
   adminConfigured: boolean;
@@ -45,6 +55,7 @@ AYC,Mon,10:00,11:30,Class,CS402 Design & Analysis of Algorithms,B1 LH 1.04`;
 export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   faculty,
   schedules,
+  scheduleMetadata,
   departments,
   events,
   adminConfigured,
@@ -68,10 +79,16 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   const [facultyCsv, setFacultyCsv] = useState('');
   const [facultyMode, setFacultyMode] = useState<'merge' | 'replace'>('merge');
   const [facultyImportStatus, setFacultyImportStatus] = useState<string | null>(null);
+  const [facultyImportError, setFacultyImportError] = useState<string | null>(null);
 
   const [scheduleCsv, setScheduleCsv] = useState('');
-  const [scheduleMode, setScheduleMode] = useState<'merge' | 'replace'>('replace');
+  const [scheduleMode, setScheduleMode] = useState<'merge' | 'replace'>('merge');
   const [scheduleImportStatus, setScheduleImportStatus] = useState<string | null>(null);
+  const [scheduleImportError, setScheduleImportError] = useState<string | null>(null);
+  const [scheduleImportSummary, setScheduleImportSummary] =
+    useState<ScheduleImportSummary | null>(null);
+  const [pendingReplaceConfirm, setPendingReplaceConfirm] = useState(false);
+  const [pendingResetConfirm, setPendingResetConfirm] = useState(false);
 
   // Roster search & inline edit
   const [rosterSearch, setRosterSearch] = useState('');
@@ -131,6 +148,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   const handleImportFaculty = async () => {
     if (!session?.token || !facultyCsv.trim()) return;
     setFacultyImportStatus(null);
+    setFacultyImportError(null);
     try {
       const res = await apiFetch('/api/admin/import/faculty', {
         method: 'POST',
@@ -149,16 +167,17 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
           `Imported ${data.importedCount} faculty/staff records${warnSuffix}.`
         );
       } else {
-        setFacultyImportStatus(data.error || 'Import failed.');
+        setFacultyImportError(data.error || 'Import failed. Existing directory preserved.');
       }
     } catch {
-      setFacultyImportStatus('Network error while importing faculty CSV.');
+      setFacultyImportError('Network error while importing faculty CSV.');
     }
   };
 
-  const handleImportSchedule = async () => {
+  const executeImportSchedule = async () => {
     if (!session?.token || !scheduleCsv.trim()) return;
     setScheduleImportStatus(null);
+    setScheduleImportError(null);
     try {
       const res = await apiFetch('/api/admin/import/schedule', {
         method: 'POST',
@@ -170,18 +189,42 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       });
       const data = await res.json();
       if (res.ok) {
+        setPendingReplaceConfirm(false);
+        setScheduleCsv('');
+        if (data.summary) {
+          setScheduleImportSummary(data.summary);
+        }
         await onDirectoryRefresh();
-        const warnSuffix =
-          data.warnings?.length > 0 ? ` (${data.warnings.length} warnings)` : '';
-        setScheduleImportStatus(
-          `Imported ${data.importedCount} weekly schedule slots${warnSuffix}.`
-        );
+        const parts: string[] = [];
+        if (data.importedCount > 0) parts.push(`${data.importedCount} added`);
+        if (data.updatedCount > 0) parts.push(`${data.updatedCount} updated`);
+        if (data.duplicateCount > 0) parts.push(`${data.duplicateCount} duplicates skipped`);
+        if (parts.length === 0) parts.push('no changes needed (all rows already up to date)');
+        setScheduleImportStatus(`Schedule saved: ${parts.join(', ')}.`);
       } else {
-        setScheduleImportStatus(data.error || 'Schedule import failed.');
+        if (data.summary) {
+          setScheduleImportSummary(data.summary);
+        }
+        setScheduleImportError(
+          data.error || 'Schedule import failed. Active schedule was preserved.'
+        );
       }
     } catch {
-      setScheduleImportStatus('Network error while importing schedule CSV.');
+      setScheduleImportError(
+        'Network error while importing schedule CSV. Active schedule was preserved.'
+      );
     }
+  };
+
+  const handleImportSchedule = async () => {
+    if (!session?.token || !scheduleCsv.trim()) return;
+    if (scheduleMode === 'replace' && schedules.length > 0 && !pendingReplaceConfirm) {
+      setPendingReplaceConfirm(true);
+      setScheduleImportStatus(null);
+      setScheduleImportError(null);
+      return;
+    }
+    await executeImportSchedule();
   };
 
   const startEdit = (m: FacultyMember) => {
@@ -250,7 +293,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     }
   };
 
-  const handleResetSample = async () => {
+  const executeResetSample = async () => {
     if (!session?.token) return;
     setRosterError(null);
     try {
@@ -259,6 +302,10 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         headers: { Authorization: `Bearer ${session.token}` },
       });
       if (res.ok) {
+        setPendingResetConfirm(false);
+        setScheduleImportSummary(null);
+        setScheduleImportStatus(null);
+        setScheduleImportError(null);
         await onDirectoryRefresh();
         setRosterMsg('Restored default university sample faculty and schedule dataset.');
       } else {
@@ -381,7 +428,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
 
           <button
             type="button"
-            onClick={handleResetSample}
+            onClick={() => setPendingResetConfirm(true)}
             className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <RotateCcw className="w-3.5 h-3.5" />
@@ -389,6 +436,36 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
           </button>
         </div>
       </div>
+
+      {pendingResetConfirm && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div className="text-xs text-amber-900 space-y-0.5">
+              <p className="font-semibold">Confirm Restore Sample Dataset?</p>
+              <p>
+                This will overwrite your current faculty contacts, imported weekly schedules, and events with the default sample dataset (a backup copy is saved automatically).
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setPendingResetConfirm(false)}
+              className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={executeResetSample}
+              className="px-3 py-1.5 text-xs font-medium text-white bg-amber-700 hover:bg-amber-800 rounded-lg cursor-pointer"
+            >
+              Confirm Restore Sample
+            </button>
+          </div>
+        </div>
+      )}
 
       {adminTab === 'events' ? (
         <EventManagerPanel
@@ -448,6 +525,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                   className="hidden"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
+                    e.target.value = '';
                     if (file) file.text().then(setFacultyCsv);
                   }}
                 />
@@ -501,6 +579,9 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             {facultyImportStatus && (
               <p className="text-xs font-medium text-emerald-700">{facultyImportStatus}</p>
             )}
+            {facultyImportError && (
+              <p className="text-xs font-medium text-rose-700">{facultyImportError}</p>
+            )}
           </div>
 
           <button
@@ -526,7 +607,10 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setScheduleCsv(SAMPLE_SCHEDULE_UPLOAD)}
+                  onClick={() => {
+                    setScheduleCsv(SAMPLE_SCHEDULE_UPLOAD);
+                    setPendingReplaceConfirm(false);
+                  }}
                   className="text-xs font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
                 >
                   Load sample
@@ -545,8 +629,36 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
               </div>
             </div>
 
+            {/* Active Schedule Source Indicator */}
+            <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-xs">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`inline-block w-2 h-2 rounded-full ${
+                    scheduleMetadata?.source === 'imported'
+                      ? 'bg-emerald-600'
+                      : scheduleMetadata?.source === 'empty'
+                      ? 'bg-amber-600'
+                      : 'bg-slate-400'
+                  }`}
+                />
+                <span className="font-medium text-slate-800">
+                  {scheduleMetadata?.source === 'imported'
+                    ? 'Official Imported Schedule Active'
+                    : scheduleMetadata?.source === 'empty'
+                    ? 'No Schedule Uploaded'
+                    : 'Demo Sample Schedule Active'}
+                </span>
+              </div>
+              <span className="font-mono text-slate-500">
+                {schedules.length} active slots
+                {scheduleMetadata?.lastImportedAt
+                  ? ` · ${new Date(scheduleMetadata.lastImportedAt).toLocaleString()}`
+                  : ''}
+              </span>
+            </div>
+
             <p className="text-xs text-slate-500">
-              Columns: <span className="font-mono">faculty_id,day,start_time,end_time,type,title,room</span> (Class, Lab, Meeting, Office Hours).
+              Columns: <span className="font-mono">faculty_id,day,start_time,end_time,type,title,room</span> (Class, Lab, Meeting, Office Hours). Supports 24h, AM/PM, and Excel time formats.
             </p>
 
             <div className="flex items-center justify-between gap-3">
@@ -559,6 +671,8 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                   className="hidden"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
+                    e.target.value = '';
+                    setPendingReplaceConfirm(false);
                     if (file) file.text().then(setScheduleCsv);
                   }}
                 />
@@ -567,18 +681,24 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
               <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-lg text-xs">
                 <button
                   type="button"
-                  onClick={() => setScheduleMode('merge')}
+                  onClick={() => {
+                    setScheduleMode('merge');
+                    setPendingReplaceConfirm(false);
+                  }}
                   className={`px-2.5 py-1 rounded-md cursor-pointer ${
                     scheduleMode === 'merge'
                       ? 'bg-white text-slate-900 font-medium'
                       : 'text-slate-600'
                   }`}
                 >
-                  Update Listed IDs
+                  Merge / Update
                 </button>
                 <button
                   type="button"
-                  onClick={() => setScheduleMode('replace')}
+                  onClick={() => {
+                    setScheduleMode('replace');
+                    setPendingReplaceConfirm(false);
+                  }}
                   className={`px-2.5 py-1 rounded-md cursor-pointer ${
                     scheduleMode === 'replace'
                       ? 'bg-white text-slate-900 font-medium'
@@ -593,7 +713,10 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             <textarea
               rows={6}
               value={scheduleCsv}
-              onChange={(e) => setScheduleCsv(e.target.value)}
+              onChange={(e) => {
+                setScheduleCsv(e.target.value);
+                setPendingReplaceConfirm(false);
+              }}
               placeholder="Paste Weekly Schedule CSV here..."
               className="w-full px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-600"
             />
@@ -601,8 +724,21 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             {schedulePreview && (
               <div className="text-xs text-slate-600 space-y-1">
                 <div>
-                  Preview: <span className="font-mono font-semibold">{schedulePreview.parsed.length}</span> valid schedule slots ({schedules.length} currently active).
+                  Preview: <span className="font-mono font-semibold">{schedulePreview.parsed.length}</span> valid unique slots from{' '}
+                  <span className="font-mono">{schedulePreview.stats.totalRows}</span> rows
+                  {schedulePreview.stats.duplicateCount > 0 && (
+                    <span className="text-amber-700"> ({schedulePreview.stats.duplicateCount} duplicates in file)</span>
+                  )}
+                  {schedulePreview.stats.invalidCount > 0 && (
+                    <span className="text-rose-700"> ({schedulePreview.stats.invalidCount} invalid)</span>
+                  )}
+                  .
                 </div>
+                {schedulePreview.stats.unknownFacultyIds.length > 0 && (
+                  <div className="text-amber-700">
+                    Unrecognized Faculty IDs: <span className="font-mono">{schedulePreview.stats.unknownFacultyIds.join(', ')}</span>
+                  </div>
+                )}
                 {schedulePreview.warnings.length > 0 && (
                   <div className="text-amber-700">{schedulePreview.warnings[0]}</div>
                 )}
@@ -610,7 +746,97 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             )}
 
             {scheduleImportStatus && (
-              <p className="text-xs font-medium text-emerald-700">{scheduleImportStatus}</p>
+              <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                <span>{scheduleImportStatus}</span>
+              </div>
+            )}
+
+            {scheduleImportError && (
+              <div className="flex items-start gap-1.5 text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2.5">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>{scheduleImportError}</span>
+              </div>
+            )}
+
+            {(scheduleImportSummary || scheduleMetadata?.lastImportSummary) && (() => {
+              const summary = scheduleImportSummary || scheduleMetadata!.lastImportSummary!;
+              return (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-slate-800">
+                    <span>Last Import Summary ({summary.mode === 'replace' ? 'Replace All' : summary.mode === 'merge' ? 'Merge / Update' : summary.mode})</span>
+                    <span className="font-mono font-normal text-slate-500">
+                      {new Date(summary.importedAt).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 font-mono text-[11px]">
+                    <div className="bg-white border border-slate-200 rounded px-2 py-1">
+                      Total rows: <span className="font-semibold text-slate-900">{summary.totalRows}</span>
+                    </div>
+                    <div className="bg-white border border-slate-200 rounded px-2 py-1">
+                      New slots: <span className="font-semibold text-emerald-700">{summary.importedCount}</span>
+                    </div>
+                    <div className="bg-white border border-slate-200 rounded px-2 py-1">
+                      Updated: <span className="font-semibold text-blue-700">{summary.updatedCount}</span>
+                    </div>
+                    <div className="bg-white border border-slate-200 rounded px-2 py-1">
+                      Duplicates: <span className="font-semibold text-amber-700">{summary.duplicateCount}</span>
+                    </div>
+                    <div className="bg-white border border-slate-200 rounded px-2 py-1">
+                      Skipped: <span className="font-semibold text-slate-700">{summary.skippedCount}</span>
+                    </div>
+                    <div className="bg-white border border-slate-200 rounded px-2 py-1">
+                      Invalid: <span className="font-semibold text-rose-700">{summary.invalidCount}</span>
+                    </div>
+                  </div>
+                  {summary.unknownFacultyIds.length > 0 && (
+                    <div className="text-amber-800">
+                      Faculty IDs not found in directory:{' '}
+                      <span className="font-mono font-semibold">{summary.unknownFacultyIds.join(', ')}</span>
+                    </div>
+                  )}
+                  {summary.warnings.length > 0 && (
+                    <details className="text-amber-800">
+                      <summary className="cursor-pointer font-medium">
+                        {summary.warnings.length} import warning{summary.warnings.length > 1 ? 's' : ''}
+                      </summary>
+                      <ul className="mt-1 list-disc pl-4 space-y-0.5 max-h-28 overflow-y-auto">
+                        {summary.warnings.slice(0, 15).map((w, idx) => (
+                          <li key={idx}>{w}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </div>
+              );
+            })()}
+
+            {pendingReplaceConfirm && (
+              <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 space-y-2 text-xs text-amber-900">
+                <p className="font-semibold flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                  <span>Confirm Replace All Weekly Schedules?</span>
+                </p>
+                <p>
+                  This will replace all {schedules.length} active weekly schedule entries with the {schedulePreview?.parsed.length ?? 0} parsed slots from this CSV.
+                </p>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPendingReplaceConfirm(false)}
+                    className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={executeImportSchedule}
+                    className="px-3 py-1.5 text-xs font-medium text-white bg-amber-700 hover:bg-amber-800 rounded-lg cursor-pointer"
+                  >
+                    Confirm Replace All
+                  </button>
+                </div>
+              </div>
             )}
           </div>
 
@@ -620,7 +846,9 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             onClick={handleImportSchedule}
             className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors cursor-pointer"
           >
-            Import Weekly Schedule CSV
+            {scheduleMode === 'replace'
+              ? 'Replace All Weekly Schedules'
+              : 'Merge / Update Weekly Schedule CSV'}
           </button>
         </div>
       </div>

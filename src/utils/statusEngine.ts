@@ -5,6 +5,7 @@ import {
   FacultyMember,
   FacultyStatusInfo,
   ScheduleSlot,
+  ScheduleSource,
   SlotType,
 } from '../types';
 
@@ -51,28 +52,66 @@ export function getDayOfWeekFromDateStr(dateStr: string): DayOfWeek {
   return JS_DAY_TO_CODE[d.getDay()] || 'Mon';
 }
 
-export function parseTimeToMinutes(timeStr: string): number {
-  const trimmed = timeStr.trim();
-  const ampmMatch = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec(trimmed);
+export function parseStrictTimeTo24(timeStr: string): string | null {
+  const cleaned = timeStr
+    .replace(/\u00A0/g, ' ')
+    .trim()
+    .replace(/\./g, ':')
+    .replace(/\s+/g, ' ');
+  if (!cleaned) return null;
+
+  // Support "9 AM", "9:30 AM", "09:30:00 PM", "9:30pm", "9:30 p:m:"
+  const normalizedMeridiem = cleaned.replace(/([ap])\s*:?\s*m\b:?/i, (_, ap) =>
+    `${ap.toUpperCase()}M`
+  );
+
+  const ampmMatch = /^(\d{1,2})(?::(\d{2}))?(?::\d{2})?\s*(AM|PM)$/i.exec(normalizedMeridiem);
   if (ampmMatch) {
     let hours = Number(ampmMatch[1]);
-    const mins = Number(ampmMatch[2]);
+    const mins = ampmMatch[2] ? Number(ampmMatch[2]) : 0;
     const period = ampmMatch[3].toUpperCase();
+    if (hours < 1 || hours > 12 || mins < 0 || mins > 59) return null;
     if (period === 'PM' && hours !== 12) hours += 12;
     if (period === 'AM' && hours === 12) hours = 0;
-    return hours * 60 + mins;
+    return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
   }
-  const match24 = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
-  if (!match24) return 0;
-  return Number(match24[1]) * 60 + Number(match24[2]);
+
+  // Support 24h "9:30", "09:30", "09:30:00"
+  const match24 = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(cleaned);
+  if (match24) {
+    const hours = Number(match24[1]);
+    const mins = Number(match24[2]);
+    if (hours < 0 || hours > 23 || mins < 0 || mins > 59) return null;
+    return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+  }
+
+  return null;
+}
+
+export function parseTimeRange(raw: string): { startTime: string; endTime: string } | null {
+  const parts = raw
+    .replace(/\u00A0/g, ' ')
+    .split(/\s*(?:-|–|—|\bto\b)\s*/i)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length !== 2) return null;
+  const startTime = parseStrictTimeTo24(parts[0]);
+  const endTime = parseStrictTimeTo24(parts[1]);
+  if (!startTime || !endTime) return null;
+  return { startTime, endTime };
+}
+
+export function parseTimeToMinutes(timeStr: string): number {
+  const strict = parseStrictTimeTo24(timeStr);
+  if (!strict) return 0;
+  const [h, m] = strict.split(':').map(Number);
+  return h * 60 + m;
 }
 
 export function normalizeTime24(timeStr: string): string {
-  const total = parseTimeToMinutes(timeStr);
-  const clamped = Math.max(0, Math.min(23 * 60 + 59, total));
-  const h = String(Math.floor(clamped / 60)).padStart(2, '0');
-  const m = String(clamped % 60).padStart(2, '0');
-  return `${h}:${m}`;
+  const strict = parseStrictTimeTo24(timeStr);
+  if (strict) return strict;
+  return '00:00';
 }
 
 export function formatTimeDisplay(time24: string): string {
@@ -105,11 +144,15 @@ export function computeFacultyStatus(
   member: FacultyMember,
   allSlots: ScheduleSlot[],
   clock: ClockConfig,
-  now = new Date()
+  now = new Date(),
+  options?: { scheduleSource?: ScheduleSource }
 ): FacultyStatusInfo {
   const { dateStr, day, minutes } = resolveEffectiveClock(clock, now);
-  const memberSlots = allSlots
-    .filter((s) => s.facultyId.toUpperCase() === member.id.toUpperCase() && s.day === day)
+  const memberAllSlots = allSlots.filter(
+    (s) => s.facultyId.toUpperCase() === member.id.toUpperCase()
+  );
+  const memberSlots = memberAllSlots
+    .filter((s) => s.day === day)
     .sort((a, b) => parseTimeToMinutes(a.startTime) - parseTimeToMinutes(b.startTime));
 
   // 1. Check leave dates
@@ -174,11 +217,28 @@ export function computeFacultyStatus(
   const isWorkingDay = member.workingDays.includes(day);
   const dutyStart = parseTimeToMinutes(member.dutyStart || '09:00');
   const dutyEnd = parseTimeToMinutes(member.dutyEnd || '17:30');
+  const scheduleSource = options?.scheduleSource ?? 'imported';
+  const missingTimetable =
+    scheduleSource === 'empty' ||
+    (scheduleSource === 'imported' && memberAllSlots.length === 0);
 
   if (isWorkingDay && minutes >= dutyStart && minutes < dutyEnd) {
+    if (missingTimetable) {
+      return {
+        state: 'free_cabin',
+        headline: `No schedule uploaded · Cabin ${member.cabin}`,
+        subline:
+          member.availabilityNote ||
+          'Timetable unavailable — check cabin or contact directly',
+        roomOrVenue: member.cabin,
+        activeSlot: null,
+        nextSlot: null,
+      };
+    }
+
     const nextText = nextSlot
       ? `Next: ${nextSlot.type} at ${formatTimeDisplay(nextSlot.startTime)} (${nextSlot.room})`
-      : member.availabilityNote || `No more scheduled sessions today`;
+      : member.availabilityNote || 'No more scheduled sessions today';
     return {
       state: 'free_cabin',
       headline: `Free · Likely in Cabin ${member.cabin}`,
@@ -197,7 +257,7 @@ export function computeFacultyStatus(
   return {
     state: 'off_duty',
     headline: 'Off duty',
-    subline: nextResume,
+    subline: missingTimetable ? `${nextResume} · No schedule uploaded` : nextResume,
     roomOrVenue: member.cabin,
     activeSlot: null,
     nextSlot,
@@ -263,13 +323,14 @@ export function parseCsvRows(csvText: string): string[][] {
 
 export function normalizeDayCode(raw: string): DayOfWeek | null {
   const val = raw.trim().toLowerCase();
-  if (val.startsWith('mon')) return 'Mon';
-  if (val.startsWith('tue')) return 'Tue';
-  if (val.startsWith('wed')) return 'Wed';
-  if (val.startsWith('thu')) return 'Thu';
-  if (val.startsWith('fri')) return 'Fri';
-  if (val.startsWith('sat')) return 'Sat';
-  if (val.startsWith('sun')) return 'Sun';
+  if (!val) return null;
+  if (val.startsWith('mon') || val === 'm') return 'Mon';
+  if (val.startsWith('tue') || val === 'tu') return 'Tue';
+  if (val.startsWith('wed') || val === 'w') return 'Wed';
+  if (val.startsWith('thu') || val === 'th') return 'Thu';
+  if (val.startsWith('fri') || val === 'f') return 'Fri';
+  if (val.startsWith('sat') || val === 'sa') return 'Sat';
+  if (val.startsWith('sun') || val === 'su') return 'Sun';
   return null;
 }
 
@@ -286,9 +347,16 @@ export function validatePhoneNumber(raw: string): {
   display: string;
   telHref: string;
 } {
-  const cleaned = raw.trim().replace(/\s+/g, ' ');
+  const cleaned = String(raw ?? '')
+    .replace(/\u00A0/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
   if (!cleaned) {
     return { valid: false, display: '', telHref: '' };
+  }
+  // Reject Excel scientific-notation corruption (e.g. 9.19063E+11)
+  if (/e\+/i.test(cleaned)) {
+    return { valid: false, display: cleaned, telHref: '' };
   }
   const hasPlus = cleaned.startsWith('+');
   const digitsOnly = cleaned.replace(/\D/g, '');
@@ -351,13 +419,21 @@ export function parseFacultyCsvText(
   const roleTypeIdx = colIndex(['roletype', 'category', 'type', 'stafftype']);
   const mobileIdx = colIndex([
     'mobilenumber',
+    'mobileno',
+    'mobilenos',
+    'mobilenumbers',
     'mobile',
     'phonenumber',
+    'phoneno',
     'phone',
     'contactno',
+    'contactnumber',
     'contact',
+    'mob',
+    'whatsapp',
+    'cell',
   ]);
-  const emailIdx = colIndex(['emailaddress', 'email', 'mail']);
+  const emailIdx = colIndex(['emailaddress', 'emailid', 'email', 'mail']);
   const leaveStartIdx = colIndex(['leavestart', 'fromdate']);
   const leaveUntilIdx = colIndex(['leaveuntil', 'leaveend', 'leave', 'todate']);
   const dutyStartIdx = colIndex(['dutystart', 'startduty', 'workstart']);
@@ -487,77 +563,223 @@ export function parseFacultyCsvText(
   return { parsed, warnings };
 }
 
+export interface ScheduleCsvStats {
+  totalRows: number;
+  validRows: number;
+  duplicateCount: number;
+  skippedCount: number;
+  invalidCount: number;
+  unknownFacultyIds: string[];
+}
+
+export function buildScheduleSlotKey(slot: {
+  facultyId: string;
+  day: DayOfWeek;
+  startTime: string;
+  endTime: string;
+}): string {
+  return `${slot.facultyId.trim().toUpperCase()}|${slot.day}|${slot.startTime}|${slot.endTime}`;
+}
+
+export function buildScheduleExactKey(slot: {
+  facultyId: string;
+  day: DayOfWeek;
+  startTime: string;
+  endTime: string;
+  type: SlotType;
+  title: string;
+  room: string;
+}): string {
+  return [
+    slot.facultyId.trim().toUpperCase(),
+    slot.day,
+    slot.startTime,
+    slot.endTime,
+    slot.type,
+    slot.title.trim().toLowerCase(),
+    slot.room.trim().toLowerCase(),
+  ].join('|');
+}
+
 export function parseScheduleCsvText(
   csvText: string,
   knownFacultyIds?: Set<string>
-): { parsed: ScheduleSlot[]; warnings: string[] } {
+): {
+  parsed: ScheduleSlot[];
+  warnings: string[];
+  stats: ScheduleCsvStats;
+} {
   const rows = parseCsvRows(csvText);
   if (rows.length < 2) {
-    return { parsed: [], warnings: ['Schedule CSV must include a header row and at least one slot.'] };
+    return {
+      parsed: [],
+      warnings: ['Schedule CSV must include a header row and at least one slot.'],
+      stats: {
+        totalRows: 0,
+        validRows: 0,
+        duplicateCount: 0,
+        skippedCount: 0,
+        invalidCount: 0,
+        unknownFacultyIds: [],
+      },
+    };
   }
 
   const headers = rows[0].map((h) => h.toLowerCase().replace(/[^a-z0-9]/g, ''));
-  const colIndex = (candidates: string[]) =>
-    headers.findIndex((h) => candidates.some((c) => h === c || h.includes(c)));
+  // Exact match across all candidates first so substring matches (e.g. "coursecode" vs "code") never hijack a real column
+  const colIndex = (candidates: string[]) => {
+    for (const c of candidates) {
+      const exact = headers.findIndex((h) => h === c);
+      if (exact !== -1) return exact;
+    }
+    return headers.findIndex((h) => candidates.some((c) => h.includes(c)));
+  };
 
-  const facIdx = colIndex(['facultyid', 'id', 'code', 'faculty']);
-  const dayIdx = colIndex(['day', 'weekday']);
-  const startIdx = colIndex(['starttime', 'start', 'from']);
-  const endIdx = colIndex(['endtime', 'end', 'to']);
+  const facIdx = colIndex(['facultyid', 'facid', 'empid', 'id', 'code', 'faculty']);
+  const dayIdx = colIndex(['day', 'weekday', 'dayofweek']);
+  const startIdx = colIndex(['starttime', 'start', 'fromtime', 'from']);
+  const endIdx = colIndex(['endtime', 'end', 'totime', 'to']);
+  const rangeIdx = colIndex(['timerange', 'timing', 'timings', 'time', 'slot']);
   const typeIdx = colIndex(['type', 'slottype', 'activity', 'category']);
-  const titleIdx = colIndex(['title', 'subject', 'course', 'description', 'event']);
-  const roomIdx = colIndex(['room', 'venue', 'hall', 'classroom', 'location']);
+  const titleIdx = colIndex(['title', 'subject', 'coursename', 'course', 'description', 'event']);
+  const roomIdx = colIndex(['room', 'roomno', 'roomnos', 'venue', 'hall', 'classroom', 'location']);
 
-  if (facIdx === -1 || dayIdx === -1 || startIdx === -1 || endIdx === -1) {
+  const hasTimeCols = (startIdx !== -1 && endIdx !== -1) || rangeIdx !== -1;
+  if (facIdx === -1 || dayIdx === -1 || !hasTimeCols) {
     return {
       parsed: [],
       warnings: [
-        'Missing required columns. Expected: faculty_id, day, start_time, end_time, type, title, room.',
+        'Missing required columns. Expected: faculty_id, day, start_time, end_time (or time range), type, title, room.',
       ],
+      stats: {
+        totalRows: rows.length - 1,
+        validRows: 0,
+        duplicateCount: 0,
+        skippedCount: rows.length - 1,
+        invalidCount: rows.length - 1,
+        unknownFacultyIds: [],
+      },
     };
   }
 
   const warnings: string[] = [];
   const parsed: ScheduleSlot[] = [];
+  const seenTimeKeys = new Map<string, number>();
+  const seenExactKeys = new Set<string>();
+  const unknownIdSet = new Set<string>();
+
+  const totalRows = rows.length - 1;
+  let duplicateCount = 0;
+  let invalidCount = 0;
+  let skippedCount = 0;
 
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i];
     const facultyId = (r[facIdx] || '').trim().toUpperCase();
     const day = normalizeDayCode(r[dayIdx] || '');
-    const startRaw = (r[startIdx] || '').trim();
-    const endRaw = (r[endIdx] || '').trim();
 
-    if (!facultyId || !day || !startRaw || !endRaw) {
-      warnings.push(`Row ${i + 1}: Skipped invalid faculty ID, day, or time range.`);
+    let startTime: string | null = null;
+    let endTime: string | null = null;
+
+    if (startIdx !== -1 && endIdx !== -1) {
+      startTime = parseStrictTimeTo24(r[startIdx] || '');
+      endTime = parseStrictTimeTo24(r[endIdx] || '');
+      if (!startTime || !endTime) {
+        const fallbackRange =
+          parseTimeRange(r[startIdx] || '') ||
+          (rangeIdx !== -1 ? parseTimeRange(r[rangeIdx] || '') : null);
+        if (fallbackRange) {
+          startTime = fallbackRange.startTime;
+          endTime = fallbackRange.endTime;
+        }
+      }
+    } else if (rangeIdx !== -1) {
+      const range = parseTimeRange(r[rangeIdx] || '');
+      if (range) {
+        startTime = range.startTime;
+        endTime = range.endTime;
+      }
+    }
+
+    if (!facultyId || !day || !startTime || !endTime) {
+      invalidCount++;
+      skippedCount++;
+      warnings.push(
+        `Row ${i + 1}: Invalid or missing faculty ID ("${r[facIdx] || ''}"), day ("${r[dayIdx] || ''}"), or time.`
+      );
+      continue;
+    }
+
+    if (parseTimeToMinutes(endTime) <= parseTimeToMinutes(startTime)) {
+      invalidCount++;
+      skippedCount++;
+      warnings.push(
+        `Row ${i + 1} (${facultyId}): End time (${endTime}) must be after start time (${startTime}).`
+      );
       continue;
     }
 
     if (knownFacultyIds && !knownFacultyIds.has(facultyId)) {
-      warnings.push(`Row ${i + 1}: Faculty ID "${facultyId}" is not in the current directory yet.`);
-    }
-
-    const startTime = normalizeTime24(startRaw);
-    const endTime = normalizeTime24(endRaw);
-    if (parseTimeToMinutes(endTime) <= parseTimeToMinutes(startTime)) {
-      warnings.push(`Row ${i + 1}: End time (${endTime}) must be after start time (${startTime}).`);
+      unknownIdSet.add(facultyId);
+      skippedCount++;
+      warnings.push(
+        `Row ${i + 1}: Faculty ID "${facultyId}" not found in directory (row skipped).`
+      );
       continue;
     }
 
     const type = typeIdx !== -1 ? normalizeSlotType(r[typeIdx] || 'Class') : 'Class';
-    const title = (titleIdx !== -1 ? r[titleIdx] : '') || `${type} Session`;
-    const room = (roomIdx !== -1 ? r[roomIdx] : '') || 'TBA';
+    const title = ((titleIdx !== -1 ? r[titleIdx] : '') || `${type} Session`).trim();
+    const room = ((roomIdx !== -1 ? r[roomIdx] : '') || 'TBA').trim();
 
-    parsed.push({
+    const slot: ScheduleSlot = {
       id: `${facultyId}-${day}-${startTime.replace(':', '')}-${i}`,
       facultyId,
       day,
       startTime,
       endTime,
       type,
-      title: title.trim(),
-      room: room.trim(),
-    });
+      title,
+      room,
+    };
+
+    const exactKey = buildScheduleExactKey(slot);
+    if (seenExactKeys.has(exactKey)) {
+      duplicateCount++;
+      skippedCount++;
+      warnings.push(
+        `Row ${i + 1} (${facultyId}): Duplicate slot (${day} ${startTime}-${endTime}) skipped.`
+      );
+      continue;
+    }
+
+    const timeKey = buildScheduleSlotKey(slot);
+    const existingIdx = seenTimeKeys.get(timeKey);
+    if (existingIdx !== undefined) {
+      duplicateCount++;
+      skippedCount++;
+      parsed[existingIdx] = { ...slot, id: parsed[existingIdx].id };
+      warnings.push(
+        `Row ${i + 1} (${facultyId}): Overwrote duplicate time slot (${day} ${startTime}-${endTime}).`
+      );
+      continue;
+    }
+
+    seenExactKeys.add(exactKey);
+    seenTimeKeys.set(timeKey, parsed.length);
+    parsed.push(slot);
   }
 
-  return { parsed, warnings };
+  return {
+    parsed,
+    warnings,
+    stats: {
+      totalRows,
+      validRows: parsed.length,
+      duplicateCount,
+      skippedCount,
+      invalidCount,
+      unknownFacultyIds: Array.from(unknownIdSet).sort(),
+    },
+  };
 }

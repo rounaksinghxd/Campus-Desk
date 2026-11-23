@@ -62,6 +62,7 @@ export async function apiFetch(
 
   try {
     return await fetch(apiUrl(path), {
+      cache: rest.cache ?? 'no-store',
       ...rest,
       signal: controller.signal,
     });

@@ -16,11 +16,14 @@ import {
   verifySessionToken,
 } from './server/store';
 import {
+  buildScheduleExactKey,
+  buildScheduleSlotKey,
   normalizeDayCode,
   normalizeSlotType,
   normalizeTime24,
   parseFacultyCsvText,
   parseScheduleCsvText,
+  parseStrictTimeTo24,
   parseTimeToMinutes,
   validateEmailAddress,
   validatePhoneNumber,
@@ -31,6 +34,7 @@ import {
   EventCategory,
   EventRegistrationStatus,
   MeetingRequest,
+  ScheduleImportSummary,
   ScheduleSlot,
 } from './src/types';
 
@@ -174,6 +178,11 @@ async function startServer() {
   ]);
 
   app.use((req, res, next) => {
+    if (req.path.startsWith('/api/')) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    }
     const origin = req.headers.origin;
     if (origin) {
       const normalizedOrigin = origin.trim().replace(/\/+$/, '');
@@ -214,6 +223,9 @@ async function startServer() {
     res.json({
       faculty: publicFaculty,
       schedules: db.schedules,
+      scheduleMetadata: db.scheduleMetadata || {
+        source: db.schedules.length > 0 ? 'imported' : 'empty',
+      },
       departments,
       adminConfigured: isAdminConfigured(),
     });
@@ -865,7 +877,7 @@ async function startServer() {
     let nextSlots: ScheduleSlot[] = [];
 
     if (typeof csvText === 'string' && csvText.trim().length > 0) {
-      const { parsed, warnings } = parseScheduleCsvText(csvText);
+      const { parsed, warnings } = parseScheduleCsvText(csvText, new Set([facultyId.toUpperCase()]));
       const ownParsed = parsed
         .filter((s) => s.facultyId.toUpperCase() === facultyId.toUpperCase())
         .map((s, idx) => ({ ...s, id: `${facultyId}-csv-${Date.now()}-${idx}` }));
@@ -873,12 +885,13 @@ async function startServer() {
         res.status(400).json({
           error:
             warnings[0] ||
-            `No schedule rows found matching your Faculty ID (${facultyId}).`,
+            `No valid schedule rows found matching your Faculty ID (${facultyId}).`,
         });
         return;
       }
       nextSlots = ownParsed;
     } else if (Array.isArray(slots)) {
+      const seenKeys = new Set<string>();
       for (let i = 0; i < slots.length; i++) {
         const s = slots[i];
         const day = normalizeDayCode(String(s?.day || ''));
@@ -886,13 +899,17 @@ async function startServer() {
           res.status(400).json({ error: `Invalid day on slot ${i + 1}.` });
           return;
         }
-        const startTime = normalizeTime24(String(s?.startTime || ''));
-        const endTime = normalizeTime24(String(s?.endTime || ''));
+        const startTime = parseStrictTimeTo24(String(s?.startTime || ''));
+        const endTime = parseStrictTimeTo24(String(s?.endTime || ''));
+        if (!startTime || !endTime) {
+          res.status(400).json({ error: `Invalid start or end time on slot ${i + 1}.` });
+          return;
+        }
         if (parseTimeToMinutes(endTime) <= parseTimeToMinutes(startTime)) {
           res.status(400).json({ error: `Slot ${i + 1} end time must be after start time.` });
           return;
         }
-        nextSlots.push({
+        const slotItem: ScheduleSlot = {
           id: `${facultyId}-${day}-${startTime.replace(':', '')}-${Date.now()}-${i}`,
           facultyId,
           day,
@@ -901,7 +918,12 @@ async function startServer() {
           type: normalizeSlotType(String(s?.type || 'Class')),
           title: String(s?.title || 'Session').trim().slice(0, 120),
           room: String(s?.room || 'TBA').trim().slice(0, 60),
-        });
+        };
+        const slotKey = buildScheduleSlotKey(slotItem);
+        if (!seenKeys.has(slotKey)) {
+          seenKeys.add(slotKey);
+          nextSlots.push(slotItem);
+        }
       }
     } else {
       res.status(400).json({ error: 'Provide either slots array or csvText.' });
@@ -909,12 +931,20 @@ async function startServer() {
     }
 
     const db = loadDb();
+    backupDb();
+    const baseSchedules = db.scheduleMetadata?.source === 'sample' ? [] : db.schedules;
     db.schedules = [
-      ...db.schedules.filter((s) => s.facultyId.toUpperCase() !== facultyId.toUpperCase()),
+      ...baseSchedules.filter((s) => s.facultyId.toUpperCase() !== facultyId.toUpperCase()),
       ...nextSlots,
     ];
+    db.scheduleMetadata = {
+      source: db.schedules.length > 0 ? 'imported' : 'empty',
+      lastImportedAt: new Date().toISOString(),
+      lastImportMode: 'faculty_portal',
+      lastImportSummary: db.scheduleMetadata?.lastImportSummary,
+    };
     saveDb(db);
-    res.json({ schedules: nextSlots });
+    res.json({ schedules: nextSlots, scheduleMetadata: db.scheduleMetadata });
   });
 
   app.patch('/api/faculty/me/profile', requireRole('faculty'), (req: AuthedRequest, res) => {
@@ -1013,30 +1043,116 @@ async function startServer() {
       res.status(400).json({ error: 'Schedule CSV content is required.' });
       return;
     }
-    const replaceAll = mode !== 'merge';
+    const importMode: 'merge' | 'replace' = mode === 'replace' ? 'replace' : 'merge';
     const db = loadDb();
     const knownIds = new Set(db.faculty.map((f) => f.id.toUpperCase()));
-    const { parsed, warnings } = parseScheduleCsvText(csvText, knownIds);
+    const { parsed, warnings, stats } = parseScheduleCsvText(csvText, knownIds);
+    const nowIso = new Date().toISOString();
 
     if (parsed.length === 0) {
-      res.status(400).json({ error: warnings[0] || 'No valid schedule slots found in CSV.' });
+      const failedSummary: ScheduleImportSummary = {
+        totalRows: stats.totalRows,
+        importedCount: 0,
+        updatedCount: 0,
+        duplicateCount: stats.duplicateCount,
+        skippedCount: stats.skippedCount,
+        invalidCount: stats.invalidCount,
+        unknownFacultyIds: stats.unknownFacultyIds,
+        warnings,
+        importedAt: nowIso,
+        mode: importMode,
+      };
+      res.status(400).json({
+        error: warnings[0] || 'No valid schedule slots found in CSV. Active schedule was preserved.',
+        warnings,
+        summary: failedSummary,
+      });
       return;
     }
 
-    if (replaceAll) {
-      db.schedules = parsed;
+    backupDb();
+
+    let importedCount = 0;
+    let updatedCount = 0;
+    let duplicateCount = stats.duplicateCount;
+    let skippedCount = stats.skippedCount;
+
+    if (importMode === 'replace') {
+      db.schedules = parsed.map((slot, idx) => ({
+        ...slot,
+        id: `${slot.facultyId}-${slot.day}-${slot.startTime.replace(':', '')}-${Date.now()}-${idx}`,
+      }));
+      importedCount = db.schedules.length;
     } else {
-      const touchedIds = new Set(parsed.map((s) => s.facultyId.toUpperCase()));
-      db.schedules = [
-        ...db.schedules.filter((s) => !touchedIds.has(s.facultyId.toUpperCase())),
-        ...parsed,
-      ];
+      // If migrating out of sample mode for the first real import, do not mix sample slots into official schedule
+      const baseSchedules = db.scheduleMetadata?.source === 'sample' ? [] : [...db.schedules];
+      const indexByTimeKey = new Map<string, number>();
+      baseSchedules.forEach((slot, idx) => {
+        indexByTimeKey.set(buildScheduleSlotKey(slot), idx);
+      });
+
+      for (let idx = 0; idx < parsed.length; idx++) {
+        const incoming = parsed[idx];
+        const timeKey = buildScheduleSlotKey(incoming);
+        const existingIdx = indexByTimeKey.get(timeKey);
+
+        if (existingIdx !== undefined) {
+          const existing = baseSchedules[existingIdx];
+          if (buildScheduleExactKey(existing) === buildScheduleExactKey(incoming)) {
+            duplicateCount++;
+            skippedCount++;
+          } else {
+            baseSchedules[existingIdx] = {
+              ...incoming,
+              id: existing.id,
+            };
+            updatedCount++;
+          }
+        } else {
+          indexByTimeKey.set(timeKey, baseSchedules.length);
+          baseSchedules.push({
+            ...incoming,
+            id: `${incoming.facultyId}-${incoming.day}-${incoming.startTime.replace(':', '')}-${Date.now()}-${idx}`,
+          });
+          importedCount++;
+        }
+      }
+
+      db.schedules = baseSchedules;
     }
+
+    const summary: ScheduleImportSummary = {
+      totalRows: stats.totalRows,
+      importedCount,
+      updatedCount,
+      duplicateCount,
+      skippedCount,
+      invalidCount: stats.invalidCount,
+      unknownFacultyIds: stats.unknownFacultyIds,
+      warnings,
+      importedAt: nowIso,
+      mode: importMode,
+    };
+
+    db.scheduleMetadata = {
+      source: db.schedules.length > 0 ? 'imported' : 'empty',
+      lastImportedAt: nowIso,
+      lastImportMode: importMode,
+      lastImportSummary: summary,
+    };
 
     saveDb(db);
     res.json({
-      importedCount: parsed.length,
+      importedCount,
+      updatedCount,
+      duplicateCount,
+      skippedCount,
+      invalidCount: stats.invalidCount,
+      totalRows: stats.totalRows,
+      unknownFacultyIds: stats.unknownFacultyIds,
       warnings,
+      summary,
+      scheduleMetadata: db.scheduleMetadata,
       schedules: db.schedules,
     });
   });
@@ -1136,6 +1252,7 @@ async function startServer() {
     res.json({
       faculty: db.faculty.map(toPublicFaculty),
       schedules: db.schedules,
+      scheduleMetadata: db.scheduleMetadata,
       events: db.events,
     });
   });

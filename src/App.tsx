@@ -19,6 +19,7 @@ import {
   FacultyLiveState,
   FacultyMember,
   FacultyStatusInfo,
+  ScheduleMetadata,
   ScheduleSlot,
 } from './types';
 import { apiFetch, getNativeApiConfigIssue, isNativeApp } from './utils/api';
@@ -28,6 +29,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('directory');
   const [faculty, setFaculty] = useState<FacultyMember[]>([]);
   const [schedules, setSchedules] = useState<ScheduleSlot[]>([]);
+  const [scheduleMetadata, setScheduleMetadata] = useState<ScheduleMetadata>({
+    source: 'sample',
+  });
   const [departments, setDepartments] = useState<string[]>([]);
   const [events, setEvents] = useState<DepartmentEvent[]>([]);
   const [adminConfigured, setAdminConfigured] = useState<boolean>(true);
@@ -65,8 +69,10 @@ export default function App() {
   const isOnline = useOnlineStatus();
   const nativeConfigIssue = getNativeApiConfigIssue();
 
-  const loadDirectory = useCallback(async () => {
-    setLoading(true);
+  const lastSyncRef = useRef<number>(0);
+
+  const loadDirectory = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
       setLoadError(null);
       const res = await apiFetch('/api/directory');
@@ -74,21 +80,29 @@ export default function App() {
       const data = await res.json();
       setFaculty(data.faculty || []);
       setSchedules(data.schedules || []);
+      setScheduleMetadata(
+        data.scheduleMetadata || {
+          source: (data.schedules || []).length > 0 ? 'imported' : 'empty',
+        }
+      );
       setDepartments(data.departments || []);
       setAdminConfigured(Boolean(data.adminConfigured));
+      lastSyncRef.current = Date.now();
     } catch (err) {
-      const detail = err instanceof Error && err.message ? err.message : '';
-      if (nativeConfigIssue) {
-        setLoadError(nativeConfigIssue);
-      } else if (!isOnline) {
-        setLoadError('You appear to be offline. Reconnect to the internet and tap Retry.');
-      } else if (detail.includes('AbortError')) {
-        setLoadError('Request timed out while connecting to CampusDesk server. Tap Retry.');
-      } else {
-        setLoadError('Unable to reach CampusDesk server. Check your connection and tap Retry.');
+      if (!opts?.silent) {
+        const detail = err instanceof Error && err.message ? err.message : '';
+        if (nativeConfigIssue) {
+          setLoadError(nativeConfigIssue);
+        } else if (!isOnline) {
+          setLoadError('You appear to be offline. Reconnect to the internet and tap Retry.');
+        } else if (detail.includes('AbortError')) {
+          setLoadError('Request timed out while connecting to CampusDesk server. Tap Retry.');
+        } else {
+          setLoadError('Unable to reach CampusDesk server. Check your connection and tap Retry.');
+        }
       }
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, [isOnline, nativeConfigIssue]);
 
@@ -107,6 +121,36 @@ export default function App() {
   useEffect(() => {
     loadDirectory();
     loadEvents();
+  }, [loadDirectory, loadEvents]);
+
+  // Keep web & Android clients synchronized when returning to foreground
+  useEffect(() => {
+    const syncIfStale = () => {
+      if (Date.now() - lastSyncRef.current > 25_000) {
+        loadDirectory({ silent: true });
+        loadEvents();
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') syncIfStale();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    let appStateHandle: { remove: () => Promise<void> } | null = null;
+    if (isNativeApp()) {
+      CapApp.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) syncIfStale();
+      })
+        .then((h) => {
+          appStateHandle = h;
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      appStateHandle?.remove().catch(() => {});
+    };
   }, [loadDirectory, loadEvents]);
 
   // Configure native Android StatusBar & hide SplashScreen cleanly
@@ -168,9 +212,11 @@ export default function App() {
   const facultyWithStatus = useMemo(() => {
     return faculty.map((member) => ({
       member,
-      status: computeFacultyStatus(member, schedules, clock, now),
+      status: computeFacultyStatus(member, schedules, clock, now, {
+        scheduleSource: scheduleMetadata.source,
+      }),
     }));
-  }, [faculty, schedules, clock, now]);
+  }, [faculty, schedules, clock, now, scheduleMetadata.source]);
 
   // Filter by department and search first to compute accurate status counts
   const deptAndSearchFiltered = useMemo(() => {
@@ -299,6 +345,17 @@ export default function App() {
               now={now}
             />
 
+            {/* Schedule Source Indicator when operating on demo sample or empty schedule */}
+            {!loading && !loadError && scheduleMetadata.source !== 'imported' && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-900">
+                <span>
+                  {scheduleMetadata.source === 'sample'
+                    ? 'Demo sample timetable is currently active. An Admin can upload the official Weekly Schedule CSV in the Admin Panel.'
+                    : 'No weekly timetable has been uploaded yet. Statuses reflect duty hours, leave dates, and direct cabin info.'}
+                </span>
+              </div>
+            )}
+
             {/* Department Quick Switcher Strip */}
             {departments.length > 0 && (
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
@@ -353,7 +410,7 @@ export default function App() {
                 <p className="text-sm text-rose-700 font-medium">{loadError}</p>
                 <button
                   type="button"
-                  onClick={loadDirectory}
+                  onClick={() => loadDirectory()}
                   className="px-4 py-2 text-xs font-medium bg-slate-900 text-white rounded-lg cursor-pointer"
                 >
                   Retry
@@ -434,6 +491,7 @@ export default function App() {
           <AdminPanelView
             faculty={faculty}
             schedules={schedules}
+            scheduleMetadata={scheduleMetadata}
             departments={departments}
             events={events}
             adminConfigured={adminConfigured}
@@ -462,6 +520,7 @@ export default function App() {
         }
         allFaculty={faculty}
         schedules={schedules}
+        scheduleMetadata={scheduleMetadata}
         clock={clock}
         now={now}
         onClose={() => setDrawerFaculty(null)}

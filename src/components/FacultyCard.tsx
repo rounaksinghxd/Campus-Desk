@@ -104,27 +104,38 @@ export const FacultyCard: React.FC<FacultyCardProps> = ({
 
       {/* Direct Contact Actions (only rendered when valid phone or email exists) */}
       {(hasPhone || hasEmail) && (
-        <div className="w-full space-y-1.5 pt-2.5 border-t border-slate-100">
+        <div
+          className="w-full space-y-1.5 pt-2.5 border-t border-slate-100"
+          aria-label="Direct Contact"
+        >
           {hasPhone && phoneInfo && (
             <a
               href={phoneInfo.telHref}
-              aria-label={`Call Faculty ${member.name}`}
+              aria-label={`Call ${member.name} at ${phoneInfo.display}`}
               title={`Call ${member.name}`}
-              className="flex items-center gap-2 px-2.5 py-2 min-h-[40px] rounded-lg bg-slate-50 hover:bg-blue-50 text-slate-700 hover:text-blue-800 transition-colors text-xs font-medium"
+              className="flex items-center justify-between gap-2 px-3 py-2 min-h-[44px] rounded-lg bg-slate-50 hover:bg-blue-50 border border-slate-200/80 hover:border-blue-300 text-slate-700 hover:text-blue-800 transition-colors text-xs font-medium"
             >
-              <Phone className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-              <span className="font-mono tabular-nums truncate">{phoneInfo.display}</span>
+              <span className="inline-flex items-center gap-2 min-w-0">
+                <Phone className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+                <span className="font-semibold text-slate-900 shrink-0">Call</span>
+                <span className="font-mono tabular-nums text-slate-600 truncate">
+                  {phoneInfo.display}
+                </span>
+              </span>
             </a>
           )}
           {hasEmail && emailInfo && (
             <a
               href={emailInfo.mailtoHref}
-              aria-label={`Send Email to ${member.name}`}
+              aria-label={`Email ${member.name} at ${emailInfo.email}`}
               title={`Email ${member.name}`}
-              className="flex items-center gap-2 px-2.5 py-2 min-h-[40px] rounded-lg bg-slate-50 hover:bg-blue-50 text-slate-700 hover:text-blue-800 transition-colors text-xs font-medium"
+              className="flex items-center justify-between gap-2 px-3 py-2 min-h-[44px] rounded-lg bg-slate-50 hover:bg-blue-50 border border-slate-200/80 hover:border-blue-300 text-slate-700 hover:text-blue-800 transition-colors text-xs font-medium"
             >
-              <Mail className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-              <span className="truncate">{emailInfo.email}</span>
+              <span className="inline-flex items-center gap-2 min-w-0">
+                <Mail className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+                <span className="font-semibold text-slate-900 shrink-0">Email</span>
+                <span className="text-slate-600 truncate">{emailInfo.email}</span>
+              </span>
             </a>
           )}
         </div>

@@ -939,6 +939,7 @@ export const FacultyPortalView: React.FC<FacultyPortalViewProps> = ({
                     className="hidden"
                     onChange={(e) => {
                       const file = e.target.files?.[0];
+                      e.target.value = '';
                       if (!file) return;
                       file.text().then((txt) => setCsvScheduleText(txt));
                     }}

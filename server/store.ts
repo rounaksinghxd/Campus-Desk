@@ -5,6 +5,7 @@ import {
   DepartmentEvent,
   FacultyMember,
   MeetingRequest,
+  ScheduleMetadata,
   ScheduleSlot,
 } from '../src/types';
 import {
@@ -19,6 +20,7 @@ export interface CampusDatabase {
   adminPasscodeHash?: string;
   faculty: StoredFaculty[];
   schedules: ScheduleSlot[];
+  scheduleMetadata?: ScheduleMetadata;
   requests: MeetingRequest[];
   events: DepartmentEvent[];
 }
@@ -102,10 +104,52 @@ export function toPublicFaculty(member: StoredFaculty): FacultyMember {
   };
 }
 
+const SAMPLE_SCHEDULE_ID_SET = new Set(INITIAL_SCHEDULES.map((s) => s.id));
+
+function inferScheduleMetadata(schedules: ScheduleSlot[]): ScheduleMetadata {
+  if (schedules.length === 0) {
+    return { source: 'empty' };
+  }
+  const allMatchSample =
+    schedules.length === INITIAL_SCHEDULES.length &&
+    schedules.every((s) => SAMPLE_SCHEDULE_ID_SET.has(s.id));
+  return { source: allMatchSample ? 'sample' : 'imported' };
+}
+
+function normalizeParsedDb(parsed: Partial<CampusDatabase>): CampusDatabase | null {
+  if (
+    !Array.isArray(parsed.faculty) ||
+    !Array.isArray(parsed.schedules) ||
+    !Array.isArray(parsed.requests)
+  ) {
+    return null;
+  }
+
+  const scheduleMetadata =
+    parsed.scheduleMetadata &&
+    (parsed.scheduleMetadata.source === 'sample' ||
+      parsed.scheduleMetadata.source === 'imported' ||
+      parsed.scheduleMetadata.source === 'empty')
+      ? parsed.scheduleMetadata
+      : inferScheduleMetadata(parsed.schedules);
+
+  return {
+    adminPasscodeHash: parsed.adminPasscodeHash,
+    faculty: parsed.faculty,
+    schedules: parsed.schedules,
+    scheduleMetadata,
+    requests: parsed.requests,
+    events: Array.isArray(parsed.events)
+      ? parsed.events
+      : structuredClone(INITIAL_DEMO_EVENTS),
+  };
+}
+
 function createInitialDb(): CampusDatabase {
   return {
     faculty: structuredClone(INITIAL_FACULTY),
     schedules: structuredClone(INITIAL_SCHEDULES),
+    scheduleMetadata: { source: 'sample' },
     requests: structuredClone(INITIAL_REQUESTS),
     events: structuredClone(INITIAL_DEMO_EVENTS),
   };
@@ -115,34 +159,44 @@ let cachedDb: CampusDatabase | null = null;
 
 export function loadDb(): CampusDatabase {
   if (cachedDb) return cachedDb;
-  try {
-    if (fs.existsSync(DATA_FILE)) {
+  if (fs.existsSync(DATA_FILE)) {
+    try {
       const raw = fs.readFileSync(DATA_FILE, 'utf-8');
       const parsed = JSON.parse(raw) as Partial<CampusDatabase>;
-      if (
-        Array.isArray(parsed.faculty) &&
-        Array.isArray(parsed.schedules) &&
-        Array.isArray(parsed.requests)
-      ) {
-        const normalized: CampusDatabase = {
-          adminPasscodeHash: parsed.adminPasscodeHash,
-          faculty: parsed.faculty,
-          schedules: parsed.schedules,
-          requests: parsed.requests,
-          events: Array.isArray(parsed.events)
-            ? parsed.events
-            : structuredClone(INITIAL_DEMO_EVENTS),
-        };
+      const normalized = normalizeParsedDb(parsed);
+      if (normalized) {
         cachedDb = normalized;
-        if (!Array.isArray(parsed.events)) {
+        if (!Array.isArray(parsed.events) || !parsed.scheduleMetadata) {
           saveDb(normalized);
         }
         return cachedDb;
       }
+    } catch {
+      try {
+        const corruptCopy = path.join(DATA_DIR, `campus-data.corrupt.${Date.now()}.json`);
+        fs.copyFileSync(DATA_FILE, corruptCopy);
+      } catch {
+        // Ignore corrupt copy errors
+      }
     }
-  } catch {
-    // Fall back to fresh seed if corrupted
   }
+
+  // Try recovering from backup before ever creating fresh sample seed
+  if (fs.existsSync(DATA_BACKUP_FILE)) {
+    try {
+      const backupRaw = fs.readFileSync(DATA_BACKUP_FILE, 'utf-8');
+      const backupParsed = JSON.parse(backupRaw) as Partial<CampusDatabase>;
+      const normalizedBackup = normalizeParsedDb(backupParsed);
+      if (normalizedBackup) {
+        cachedDb = normalizedBackup;
+        saveDb(normalizedBackup);
+        return cachedDb;
+      }
+    } catch {
+      // Backup invalid, fall back to initial seed
+    }
+  }
+
   cachedDb = createInitialDb();
   saveDb(cachedDb);
   return cachedDb;
@@ -173,7 +227,13 @@ export function backupDb(): boolean {
 
 export function resetDbToSample(): CampusDatabase {
   const current = loadDb();
+  backupDb();
   const next = createInitialDb();
+  next.scheduleMetadata = {
+    source: 'sample',
+    lastImportedAt: new Date().toISOString(),
+    lastImportMode: 'reset',
+  };
   // Preserve claimed admin passcode hash so admin stays authenticated
   if (current.adminPasscodeHash) {
     next.adminPasscodeHash = current.adminPasscodeHash;

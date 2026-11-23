@@ -13,6 +13,7 @@ import {
   DayOfWeek,
   FacultyMember,
   MeetingRequest,
+  ScheduleMetadata,
   ScheduleSlot,
 } from '../types';
 import {
@@ -31,6 +32,7 @@ interface FacultyDetailDrawerProps {
   member: FacultyMember | null;
   allFaculty: FacultyMember[];
   schedules: ScheduleSlot[];
+  scheduleMetadata?: ScheduleMetadata;
   clock: ClockConfig;
   now: Date;
   onClose: () => void;
@@ -41,6 +43,7 @@ export const FacultyDetailDrawer: React.FC<FacultyDetailDrawerProps> = ({
   member,
   allFaculty,
   schedules,
+  scheduleMetadata,
   clock,
   now,
   onClose,
@@ -69,16 +72,20 @@ export const FacultyDetailDrawer: React.FC<FacultyDetailDrawerProps> = ({
 
   if (!member) return null;
 
-  const status = computeFacultyStatus(member, schedules, clock, now);
+  const status = computeFacultyStatus(member, schedules, clock, now, {
+    scheduleSource: scheduleMetadata?.source,
+  });
   const phoneInfo = member.mobileNumber ? validatePhoneNumber(member.mobileNumber) : null;
   const emailInfo = member.email ? validateEmailAddress(member.email) : null;
   const hasPhone = Boolean(phoneInfo?.valid);
   const hasEmail = Boolean(emailInfo?.valid);
 
-  const daySlots = schedules
-    .filter(
-      (s) => s.facultyId.toUpperCase() === member.id.toUpperCase() && s.day === selectedDay
-    )
+  const memberWeeklySlots = schedules.filter(
+    (s) => s.facultyId.toUpperCase() === member.id.toUpperCase()
+  );
+  const hasAnyWeeklySchedule = memberWeeklySlots.length > 0;
+  const daySlots = memberWeeklySlots
+    .filter((s) => s.day === selectedDay)
     .sort((a, b) => parseTimeToMinutes(a.startTime) - parseTimeToMinutes(b.startTime));
 
   const handleSubmitRequest = async (e: React.FormEvent) => {
@@ -205,12 +212,12 @@ export const FacultyDetailDrawer: React.FC<FacultyDetailDrawerProps> = ({
                 {hasPhone && phoneInfo && (
                   <a
                     href={phoneInfo.telHref}
-                    aria-label="Call Faculty"
+                    aria-label={`Call ${member.name} at ${phoneInfo.display}`}
                     className="flex items-center gap-3 px-3.5 py-2.5 min-h-[44px] bg-white border border-slate-200 hover:border-blue-600 hover:bg-blue-50/40 rounded-xl transition-colors"
                   >
                     <Phone className="w-4 h-4 text-blue-700 shrink-0" />
                     <div className="min-w-0">
-                      <div className="text-xs font-semibold text-slate-900">Call Faculty</div>
+                      <div className="text-xs font-semibold text-slate-900">Call</div>
                       <div className="text-xs font-mono tabular-nums text-slate-600 truncate">
                         {phoneInfo.display}
                       </div>
@@ -220,12 +227,12 @@ export const FacultyDetailDrawer: React.FC<FacultyDetailDrawerProps> = ({
                 {hasEmail && emailInfo && (
                   <a
                     href={emailInfo.mailtoHref}
-                    aria-label="Send Email"
+                    aria-label={`Email ${member.name} at ${emailInfo.email}`}
                     className="flex items-center gap-3 px-3.5 py-2.5 min-h-[44px] bg-white border border-slate-200 hover:border-blue-600 hover:bg-blue-50/40 rounded-xl transition-colors"
                   >
                     <Mail className="w-4 h-4 text-blue-700 shrink-0" />
                     <div className="min-w-0">
-                      <div className="text-xs font-semibold text-slate-900">Send Email</div>
+                      <div className="text-xs font-semibold text-slate-900">Email</div>
                       <div className="text-xs text-slate-600 truncate">{emailInfo.email}</div>
                     </div>
                   </a>
@@ -263,10 +270,20 @@ export const FacultyDetailDrawer: React.FC<FacultyDetailDrawerProps> = ({
 
             {daySlots.length === 0 ? (
               <div className="border border-dashed border-slate-200 rounded-xl p-5 text-center text-sm text-slate-500">
-                No classes or meetings scheduled for {DAY_FULL_LABELS[selectedDay]}.
-                {member.workingDays.includes(selectedDay)
-                  ? ` Available in Cabin ${member.cabin} during duty hours.`
-                  : ' Off duty.'}
+                {scheduleMetadata?.source === 'empty' ||
+                (scheduleMetadata?.source === 'imported' && !hasAnyWeeklySchedule) ? (
+                  <>
+                    Schedule not available yet — no weekly timetable has been uploaded for{' '}
+                    <span className="font-medium text-slate-700">{member.name}</span>.
+                  </>
+                ) : (
+                  <>
+                    No classes or meetings scheduled for {DAY_FULL_LABELS[selectedDay]}.
+                    {member.workingDays.includes(selectedDay)
+                      ? ` Available in Cabin ${member.cabin} during duty hours.`
+                      : ' Off duty.'}
+                  </>
+                )}
               </div>
             ) : (
               <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden">

@@ -118,3 +118,24 @@ export interface DepartmentEvent {
   updatedAt: string;
 }
 
+export type ScheduleSource = 'sample' | 'imported' | 'empty';
+
+export interface ScheduleImportSummary {
+  totalRows: number;
+  importedCount: number;
+  updatedCount: number;
+  duplicateCount: number;
+  skippedCount: number;
+  invalidCount: number;
+  unknownFacultyIds: string[];
+  warnings: string[];
+  importedAt: string;
+  mode: 'merge' | 'replace' | 'faculty_portal' | 'reset';
+}
+
+export interface ScheduleMetadata {
+  source: ScheduleSource;
+  lastImportedAt?: string;
+  lastImportMode?: 'merge' | 'replace' | 'faculty_portal' | 'reset';
+  lastImportSummary?: ScheduleImportSummary;
+}
